@@ -39,7 +39,7 @@ Parse-aware (tree-sitter-cpp) source search plus compiler-backed build tools. Th
 
 | Tool | Description |
 |---|---|
-| `cpp_grep_usage` | Parse-aware C++ identifier search across `.cpp/.h/.hpp/.cc` files using ast-grep + tree-sitter-cpp. Skips comments and strings. Searches `src/`, `include/`, `modules/` by default |
+| `cpp_grep_usage` | Parse-aware C++ identifier search across `.cpp/.h/.hpp/.cc` files using ast-grep + tree-sitter-cpp. Skips comments and strings. Searches the C++ index roots by default (`src/`, `include/`, `modules/` in an in-tree session) |
 | `cpp_find_symbol` | Search C++ symbol DECLARATIONS by name + kind (`function`/`class`/`struct`/`enum`/`union`/`typedef`/`namespace`/`macro`). Best-effort; macro-expanded declarations are invisible to ast-grep |
 | `cpp_outline` | List C++ declarations in a file or glob, grouped by file with containment (methods under their class). Works on broken code; no compile DB needed |
 | `cpp_goto_definition` | Up to 5 plausible definition locations for a cursor position. Approximate - no scope resolution or overload disambiguation |
@@ -60,6 +60,13 @@ Parse-aware (tree-sitter-cpp) source search plus compiler-backed build tools. Th
 ```
 
 Alternatively, launch Claude Code itself from an *x64 Native Tools Command Prompt for VS* (the server inherits the environment). clang/gcc find their system headers automatically, so this is Windows/MSVC-only - on Linux/macOS point `.mcp.json` straight at the daslang binary.
+
+#### C++ index roots {#cpp-index-roots}
+
+The `cpp_*` tools scan `CPP_SEARCH_DIRS` (`cpp_search_config.das` - `src`, `include`, `modules`)
+under the daslang root. A server serving another tree scans that tree whole instead: the configured
+folders are daslang's own layout and say nothing about another project, and a single root keeps the
+index and every result path relative to the tree the caller asked about.
 
 ### Two servers: full (`main.das`) and C++-only (`cpp_main.das`)
 
@@ -202,7 +209,8 @@ Restart the session in the worktree afterward to pick up the server.
 > `setup.das` therefore points `.mcp.json` at the **worktree-local** binary so
 > file resolution stays inside the worktree. If you ever wire a *shared* binary
 > from another checkout, pass `-dasroot <worktree>` in `args` or every tool will
-> read the wrong tree.
+> read the wrong tree. A tool's relative path is another matter - it resolves against
+> the served tree (see "The served tree" under How It Works).
 
 ## Architecture
 
@@ -289,4 +297,12 @@ The server implements the MCP protocol via JSON-RPC 2.0 over stdio, handling `in
 - Writes JSON-RPC responses to stdout (one line per message)
 - Logs to stderr and to `utils/mcp/mcp_server.log`
 
-File paths passed to tools are resolved relative to the server's working directory.
+### The served tree {#served-tree}
+
+A tool's relative path resolves against the server's working directory - the tree the stdio front
+entered with `--cwd`. `server_root()` (`tools/common.das`) names that tree; it is spelled generic,
+with forward slashes, like `get_das_root()`, so a result compares against it as a string. In an
+in-tree session the served tree is the daslang root; when another project's `.mcp.json` names this
+checkout's watchdog it is that project's root. `das_root` is separate: daslang derives it from the
+directory above `bin/`, so module resolution stays in the checkout that built the server, whatever
+tree is served.
