@@ -10,7 +10,7 @@ This section provides hands-on tutorials organized by topic:
 * **C Integration Tutorials** — embed daslang in a C host using the ``daScriptC.h`` API
 * **C++ Integration Tutorials** — embed daslang in a C++ host using the native ``daScript.h`` API
 * **Macro Tutorials** — write compile-time code transformations using the daslang macro system
-* **Module Tutorials** — dasHV (HTTP), dasLLAMA (local LLM inference), dasOPENAI (LLM / OpenAI-compatible API), dasPUGIXML (XML), dasStbImage, dasAudio, dasMinfft (FFT / DCT), dasVulkan and OpenGL / WebGL2 (graphics), dasPEG (parser generator), dasFlex (lexer generator)
+* **Module Tutorials** — dasHV (HTTP), dasLLAMA (local LLM inference), dasOPENAI (LLM / OpenAI-compatible API), dasPUGIXML (XML), dasStbImage, dasAudio, dasMinfft (FFT / DCT), dasVulkan and OpenGL / WebGL2 (graphics), dasPEG (parser generator), dasFlex (lexer generator), dasBison (LALR(1) parser generator)
 
 .. _tutorials_language:
 
@@ -698,6 +698,29 @@ Run any tutorial from the project root::
    tutorials/dasFlex_01_json_tokens.rst
    tutorials/dasFlex_02_flex_reader.rst
    tutorials/dasFlex_03_groups.rst
+
+.. _tutorials_dasbison:
+
+dasBison (Parser Generator) Tutorials
+=====================================
+
+These tutorials cover the ``bison`` module --- daslang's LALR(1) parser
+generator.  A grammar is written as rules in a ``[bison]`` function or as
+yacc-like ``%bison~`` text; the macro builds the tables at compile time
+and turns the function into a typed parser over the tokens of a
+``[flex]`` lexer.
+
+The companion ``.das`` files are in ``tutorials/dasBison/``.
+
+Run any tutorial from the project root::
+
+   daslang.exe tutorials/dasBison/01_calculator.das
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/dasBison_01_calculator.rst
+   tutorials/dasBison_02_bison_reader.rst
 
 .. _tutorials_imgui:
 
