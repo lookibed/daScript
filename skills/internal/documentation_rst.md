@@ -164,8 +164,8 @@ Source-file conventions (location, naming, header shape, install hooks): **read
 `skills/internal/tutorials.md` first** - the recurring mistake it prevents is overwriting the
 inherited examples under `modules/<X>/tutorial/`.
 
-Areas: `language`, `macros`, `integration/c`, `integration/cpp`, `sql`, `dasAudio`, `dasFlex`,
-`dasHV`, `dasMinfft`, `dasOPENAI`, `dasPEG`, `dasPUGIXML`, `dasStbImage`, `daStrudel`.
+Areas: `language`, `macros`, `integration/c`, `integration/cpp`, `sql`, `dasAudio`, `dasBison`,
+`dasFlex`, `dasHV`, `dasMinfft`, `dasOPENAI`, `dasPEG`, `dasPUGIXML`, `dasStbImage`, `daStrudel`.
 
 | | RST lives in | sources | label | `.. index:: single:` | `:download:` links |
 |---|---|---|---|---|---|
