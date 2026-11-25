@@ -343,6 +343,8 @@ def test_rhs_text(t : T?) {
     }
     t |> equal(parse_rhs("a %prec").err, "%prec needs a token name")
     t |> equal(parse_rhs("a %prec X b").err, "'b' after %prec X: %prec ends the right-hand side")
+    t |> equal(parse_rhs("e %prec X '+'").err,
+               "'+' after %prec X: %prec ends the right-hand side")
     t |> equal(parse_rhs("a + b").err,
                "unexpected '+' at offset 2: a symbol is a name or a quoted character")
 }
@@ -736,7 +738,7 @@ struct private MacroError {
 //! grammar's shape uses
 let private NUM_RULE = "    rule(\"e\", \"NUM\") <| $(n : FlexToken) => 1\n"
 
-[test(description = "every [bison] error has its message and its line: call shapes in the body, the four action checks, a root that yields nothing, the token enum's values, a kind past the map, an error of a precedence line, a bad right-hand side, an empty grammar, the annotation's own arguments")]
+[test(description = "every [bison] error has its message and its line: call shapes in the body, the four action checks, a root that yields nothing, the token enum's values (a negative one is no token), a kind past the map, an error of a precedence line, a bad right-hand side, an empty grammar, the annotation's own arguments")]
 def test_macro_errors(t : T?) {
     let shape = ("rule(\"lhs\", \"rhs\") or rule(\"lhs\", \"rhs\") <| $(values) \{ action \} "
         + "expected")
@@ -776,6 +778,8 @@ def test_macro_errors(t : T?) {
         MacroError(head = "enum Tok : int64 \{\n    NUM = 5000000000l\n\}\n", body = NUM_RULE,
                    message = ("[bison] tokens = Tok: NUM = 5000000000 does not fit a token kind, "
                        + "an int"), line = 13),
+        MacroError(head = "enum Tok \{\n    NUM = -1\n\}\n", body = NUM_RULE,
+                   message = "[bison] 'NUM' is neither a rule nor a token", line = 15),
         MacroError(head = "enum Tok \{\n    NUM = 70000\n\}\n", body = NUM_RULE,
                    message = ("[bison] token kind 70000 is past 65535, the largest the kind map "
                        + "holds"), line = 13),
@@ -803,4 +807,46 @@ def test_macro_errors(t : T?) {
     let no_lexer = replace(grammar_module(NUM_RULE), "lexer = lx)", "expected = 0)")
     t |> has_issue(compile_issues("no_lexer.das", no_lexer),
                    "[bison] needs tokens = <the token enum> and lexer = <the [flex] function>")
+}
+
+[test(description = "a token enum's member written as an unsigned literal, 256u or 256ul, is the token kind 256")]
+def test_unsigned_enum_values(t : T?) {
+    for (head in ["enum Tok : uint \{\n    NUM = 256u\n\}\n",
+                  "enum Tok : uint64 \{\n    NUM = 256ul\n\}\n"]) {
+        t |> equal(compile_issues("unsigned.das", tok_module(head)), "", head)
+    }
+}
+
+[test(description = "an action that only builds and calls a lambda returning a value, or one declared : void, yields nothing: its rule gets no value stack and its epsilon production needs no action")]
+def test_effect_only_actions(t : T?) {
+    let lambda_action = ("    rule(\"e\", \"items NUM\") <| $(n : FlexToken) => 1\n"
+        + "    rule(\"items\", \"items NUM\") <| $(n : FlexToken) \{\n"
+        + "        let twice = @(x : int) : int \{\n            return x * 2\n        \}\n"
+        + "        verify(invoke(twice, 1) == 2)\n    \}\n"
+        + "    rule(\"items\", \"\")\n")
+    t |> equal(compile_issues("lambda.das", grammar_module(lambda_action)), "")
+    let void_action = ("    rule(\"e\", \"items NUM\") <| $(n : FlexToken) => 1\n"
+        + "    rule(\"items\", \"items NUM\") <| $(n : FlexToken) : void \{\n"
+        + "        assert(n.len > 0)\n    \}\n"
+        + "    rule(\"items\", \"\")\n")
+    t |> equal(compile_issues("void.das", grammar_module(void_action)), "")
+}
+
+[test(description = "a global or a function of the module named as the ones [bison] generates fails the compile with the collision named")]
+def test_generated_name_collisions(t : T?) {
+    let global = "{TOK_ENUM}var private calc`bison`action : array<int>\n"
+    t |> has_issue(compile_issues("clash1.das", bison_module(global, NUM_RULE)),
+                   "can't add the global calc`bison`action")
+    let fn = ("{TOK_ENUM}def private calc`bison`act`0(var p : Parser; var n : FlexToken) "
+        + ": int \{\n    return 0\n\}\n")
+    t |> has_issue(compile_issues("clash2.das", bison_module(fn, NUM_RULE)),
+                   "can't add the action function of rule(\"e\", \"NUM\")")
+}
+
+[test(description = "text(lexer, token) is the token's stored text when it has one, else its slice of the input")]
+def test_token_text(t : T?) {
+    var p : Parser
+    parser_open(p, "raw")
+    t |> equal(text(p.lexer, FlexToken(text = "normalized", start = 0, len = 3)), "normalized")
+    t |> equal(text(p.lexer, FlexToken(start = 0, len = 3)), "raw")
 }

@@ -259,7 +259,7 @@ def private out_line(out : BisonReaderOutput; n : int) : string {
 def private rules_source(rules : string) : BisonReaderOutput =>
     bison_reader_source(" e : int, tokens = T, lexer = lx\n%rules\n" + rules)
 
-[test(description = "the reader lexes comments between rules, quoted quotes and braces, character literals and // in actions, $ before a non-digit, %empty, %prec with a quoted character, CRLF and nested types in the header and %type")]
+[test(description = "the reader lexes comments between rules, quoted quotes and braces, character literals (an escaped quote included), an escaped quote before a brace in a string and // in actions, $ before a non-digit, %empty, %prec with a quoted character, CRLF and nested types in the header and %type")]
 def test_reader_lexing(t : T?) {
     let between = rules_source("e : f \{ $$ = 1 \} ;\n// one \} here\n/* two\n \} */\nf : N ;\n")
     t |> equal(out_line(between, 6), "rule(\"f\", \"N\")")
@@ -270,6 +270,12 @@ def test_reader_lexing(t : T?) {
     t |> equal(out_line(chars, 2),
                "rule(\"e\", \"N\") <| $() : int \{ let c = '\}'; return 1 // \}")
     t |> equal(out_line(chars, 4), "rule(\"e\", \"N N\") <| $() : int \{ return 2 \}")
+    let quoted_brace = rules_source("e : N \{ let s = \"\\\"\}\"; $$ = 1 \} ;\n")
+    t |> equal(out_line(quoted_brace, 2),
+               "rule(\"e\", \"N\") <| $() : int \{ let s = \"\\\"\}\"; return 1 \}")
+    let quote_char = rules_source("e : N \{ let c = '\\''; $$ = 1 \} ;\n")
+    t |> equal(out_line(quote_char, 2),
+               "rule(\"e\", \"N\") <| $() : int \{ let c = '\\''; return 1 \}")
     let dollar = rules_source("e : N \{ $$ = $x \} ;\n")
     t |> equal(out_line(dollar, 2), "rule(\"e\", \"N\") <| $() : int \{ return $x \}")
     let none = rules_source("e : f N \{ $$ = 1 \} ;\nf : %empty | N ;\n")
@@ -289,6 +295,13 @@ def test_reader_lexing(t : T?) {
         + "array<tuple<int, float>> \{")
     t |> equal(out_line(types, 4), "rule(\"f\", \"N\") <| $() : table<string; array<int>> \{ "
         + "return \{\"a\" => [1]\} \}")
+}
+
+[test(description = "an explicit %type of the root wins over the header's type: the root's actions declare the %type")]
+def test_root_type(t : T?) {
+    let out = bison_reader_source(" e : int, tokens = T, lexer = lx\n%type <float> e\n%rules\n"
+        + "e : N \{ $$ = 1.0 \} ;\n")
+    t |> equal(out_line(out, 3), "rule(\"e\", \"N\") <| $() : float \{ return 1.0 \}")
 }
 
 //! a module with a lexer of `NUM` and punctuation and a

@@ -152,7 +152,7 @@ def test_right(t : T?) {
     t |> equal(parse_tree(res.tables, gb, "1 + 2 ^ 3 + 4"), "+(+(1, ^(2, 3)), 4)")
 }
 
-[test(description = "%nonassoc < turns its tie into an error cell: a < b parses, a < b < c is refused at the second < with < not expected")]
+[test(description = "%nonassoc < turns its tie into an error cell, reported as bison words it: a < b parses, a < b < c is refused at the second < with < not expected")]
 def test_nonassoc(t : T?) {
     var gb <- arith(["<", "+"])
     prec_nonassoc(gb, terms(gb, ["<"]))
@@ -171,6 +171,7 @@ def test_nonassoc(t : T?) {
             t |> equal(c.term, term_id(gb, "<"))
             t |> equal(c.chosen, 0)
             t |> equal(length(c.removed), 2)
+            t |> equal(c.words, ["error (nonassociative)"])
             t |> equal(res.tables.action[c.state * res.tables.nterms + c.term], 0)
         }
     }

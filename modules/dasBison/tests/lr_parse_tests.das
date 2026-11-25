@@ -124,7 +124,9 @@ def test_ill_formed(t : T?) {
         t |> equal(tb.err, "rule 'A' derives no terminal string")
         t |> equal(tb.err_rule, "A")
         t |> equal(tb.nstates, 0)
-        t |> success(!lr_parse(tb, tokens(gb, "x")).ok)
+        let r <- lr_parse(tb, tokens(gb, "x"))
+        t |> success(!r.ok)
+        t |> equal(r.err, "rule 'A' derives no terminal string")
     }
     {
         var gb : LalrBuilder
@@ -313,4 +315,28 @@ def test_parse_edges(t : T?) {
     t |> success(!r.ok)
     t |> equal(r.pos, 1)
     t |> equal(r.token, tb.eof)
+}
+
+[test(description = "a reduce whose goto is missing stops lr_parse with the missing-goto error, and the expected-set walk refuses that path instead of reading state -1")]
+def test_missing_goto(t : T?) {
+    var gb : LalrBuilder
+    prod(gb, "S", "x")
+    let tb <- build_lalr(gb, rule_id(gb, "S"))
+    t |> equal(tb.err, "")
+    t |> equal(describe_prod(tb, 1), "S ::= x")
+    var broken := tb
+    for (st in range(broken.nstates)) {
+        broken.goto_nt[st * broken.nrules + broken.prods[1].lhs] = -1
+    }
+    let r <- lr_parse(broken, tokens(gb, "x"))
+    t |> success(!r.ok)
+    t |> equal(r.err, "no goto after reducing S ::= x")
+    let cols <- prod_columns(broken)
+    let after_x <- [0, broken.action[tid(gb, "x")] - 1]
+    let whole <- lr_expected(tb.action, tb.goto_nt, cols.lhs, cols.len, tb.nterms, tb.nrules,
+                             after_x)
+    t |> equal(whole, [tb.eof])
+    let refused <- lr_expected(broken.action, broken.goto_nt, cols.lhs, cols.len, broken.nterms,
+                               broken.nrules, after_x)
+    t |> equal(length(refused), 0)
 }
