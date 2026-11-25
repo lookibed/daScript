@@ -34,8 +34,8 @@ def lex_tokens(var lx : FlexLexer; src : string; scan : block<(var lx : FlexLexe
 //! choices when `jit_policy`, JIT-compiled when `jit` - and hands a
 //! program that compiled to `blk`: "" when it compiled and `blk`
 //! returned "", else the compile issues or what `blk` returned
-def private compile_virtual(name, text : string; jit_policy, jit : bool;
-                            blk : block<(program : ProgramPtr) : string>) : string {
+def compile_virtual(name, text : string; jit_policy, jit : bool;
+                    blk : block<(program : ProgramPtr) : string>) : string {
     var out = ""
     var inscope access <- make_file_access("")
     set_file_source(access, name, text)

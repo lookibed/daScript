@@ -90,18 +90,26 @@ def generated_files(dir : string) : array<tuple<path : string; text : string>> {
                where !empty(rules)]
 }
 
+//! writes every generated file into `dir`, a file only when its text
+//! changed: whether `dir/c_lexer.das` holds `c_next`, and a line per
+//! file saying `written` or `unchanged` - or the line saying it does
+//! not
+def write_generated(dir : string) : tuple<ok : bool; lines : array<string>> {
+    let files <- generated_files(dir)
+    if (empty(files)) {
+        return <- (ok = false, lines <- ["{dir}/c_lexer.das: no `def c_next(` found"])
+    }
+    return <- (ok = true, lines <- [for (f in files);
+                                    "{f.path}: {fwrite_if_changed(f.path, f.text) ? "written"
+                                                                                  : "unchanged"}"])
+}
+
 [export]
 def main() : int {
     let here = dir_name(string(get_line_info().fileInfo.name))
-    let dir = empty(here) ? "." : here
-    let files <- generated_files(dir)
-    if (empty(files)) {
-        print("{dir}/c_lexer.das: no `def c_next(` found\n")
-        return 1
+    let res <- write_generated(empty(here) ? "." : here)
+    for (line in res.lines) {
+        print("{line}\n")
     }
-    for (f in files) {
-        let written = fwrite_if_changed(f.path, f.text)
-        print("{f.path}: {written ? "written" : "unchanged"}\n")
-    }
-    return 0
+    return res.ok ? 0 : 1
 }

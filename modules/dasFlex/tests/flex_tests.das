@@ -11,6 +11,7 @@ require daslib/strings_boost
 require flex/flex_macro
 require _flex_test_helpers
 require daslib/fio
+require daslib/regex
 require ../examples/c_lexer/gen_variants.das
 
 enum TTok {
@@ -719,4 +720,210 @@ def test_c_lexer_variants_generated(t : T?) {
         t |> success(replace(fread(f.path), "\r\n", "\n") == f.text,
                      "{f.path} is not the gen_variants.das output - run it, never edit by hand")
     }
+}
+
+//! a rule that matches the empty string; its body ends the scan if it
+//! ever runs on an empty token, so a scanner that took one stops
+//! instead of looping
+let private EMPTY_RULES = %stringify~
+    rule("a*") {
+        if (lx.tok.len == 0) {
+            rule_log |> push("an empty token")
+            lx.pos = lx.len
+        } else {
+            lx |> emit(1)
+        }
+    }
+%%
+
+[test(description = "a rule that matches the empty string stops the scan with an error at the byte no rule consumes, in every matcher shape, and never takes an empty token")]
+def test_zero_length_match(t : T?) {
+    let shapes <- [REF_SHAPE, "mode = \"table\", matcher = \"inline\"", "mode = \"goto\""]
+    let res <- shape_streams("empty_match.das", EMPTY_RULES, shapes, "aab", tier_is_jit())
+    t |> equal(res.issues, "")
+    for (stream in res.streams) {
+        t |> equal(stream, ["1@1:1:aa", "t.txt:1:3: unexpected 'b'"])
+    }
+    let tb <- flex_tables([FlexRule(pattern = "a*")])
+    var lx : FlexLexer
+    flex_open(lx, "b")
+    var len = -1
+    let rule = flex_match_table(lx, tb.next, tb.accept, tb.class_of, tb.nclasses, tb.start[0], len)
+    t |> equal(rule, 0)
+    t |> equal(len, 0)
+}
+
+//! how a refusal of a regex form ends
+let private NOT_CARRIED = "does not fit a DFA and is not carried by dasFlex"
+
+[test(description = "a lookahead group, positive or negative, is refused by name; of two refused forms in one regex the first is reported")]
+def test_refused_lookahead_and_first_refusal(t : T?) {
+    for (pattern in ["a(?=b)", "a(?!b)"]) {
+        let tb <- flex_tables([FlexRule(pattern = pattern)])
+        t |> equal(tb.err, "rule 0: a lookahead group at offset 1 {NOT_CARRIED}")
+    }
+    let anchors <- flex_tables([FlexRule(pattern = "^a$")])
+    t |> equal(anchors.err, "rule 0: an anchor (^ or $) at offset 0 {NOT_CARRIED}")
+}
+
+[test(description = "emit called outside a rule body sets the token kind and marks the token emitted")]
+def test_runtime_emit(t : T?) {
+    var lx : FlexLexer
+    flex_open(lx, "x")
+    emit(lx, 7)
+    t |> equal(lx.tok.kind, 7)
+    t |> success(lx.emitted)
+    emit(lx, TTok.STR)
+    t |> equal(lx.tok.kind, int(TTok.STR))
+}
+
+[test(description = "text_is is false for a word of the token's length that differs in its bytes; text() returns its cached string while one is set")]
+def test_text_is_and_text_cache(t : T?) {
+    var lx : FlexLexer
+    flex_open(lx, "hello", "t.txt")
+    mini(lx)
+    t |> success(!text_is(lx, "jello"))
+    t |> equal(text(lx), "hello")
+    lx.tok.text = "cached"
+    t |> equal(text(lx), "cached")
+}
+
+[test(description = "the group cache belongs to one regex on one token: a second regex on the same token matches again, and a regex that matches only a prefix of the token fills no group")]
+def test_group_cache_identity(t : T?) {
+    var first <- flex_group_regex("(a)b")
+    var second <- flex_group_regex("a(b)")
+    var lx : FlexLexer
+    flex_open(lx, "ab")
+    flex_consume(lx, 0, 2)
+    t |> equal(flex_group(lx, first, 1), "a")
+    t |> equal(flex_group(lx, second, 1), "b")
+    var prefix <- regex_compile("(a)")
+    t |> equal(flex_group(lx, prefix, 1), "")
+    t |> equal(flex_group_span(lx, prefix, 1), range(0, 0))
+}
+
+[test(description = "minimizing empty tables does nothing and reports nothing; the fragment of an absent regex node is one state with no edge")]
+def test_empty_backend_inputs(t : T?) {
+    var tb = FlexTables()
+    minimize(tb)
+    t |> equal(tb.err, "")
+    t |> equal(tb.nstates, 0)
+    var n = Nfa()
+    let f = frag_of(n, null)
+    t |> equal(f.first, f.last)
+    t |> equal(length(n.accept), 1)
+    t |> equal(length(n.edges[0]), 0)
+    t |> equal(n.err, "")
+}
+
+//! the control flow and the jumps of one function's body; a table
+//! scanner has a label per rule and the done label, a goto scanner
+//! a label per state and the done label, its computed `goto` the jump
+//! to the start state
+struct private FlowCounts {
+    generated : int             //!< `if` and `while` nodes the macro marked generated
+    authored : int              //!< `if` and `while` nodes it did not
+    labels : int
+    computed_gotos : int        //!< `goto` to a label computed at run time
+}
+
+class private FlowCensus : AstVisitor {
+    counts : FlowCounts
+    def tally(e : Expression?) {
+        if (e.genFlags.generated) {
+            counts.generated++
+        } else {
+            counts.authored++
+        }
+    }
+    def override preVisitExprIfThenElse(expr : ExprIfThenElse?) {
+        tally(expr)
+    }
+    def override preVisitExprWhile(expr : ExprWhile?) {
+        tally(expr)
+    }
+    def override preVisitExprLabel(expr : ExprLabel?) {
+        counts.labels++
+    }
+    def override preVisitExprGoto(expr : ExprGoto?) {
+        if (expr.subexpr != null) {
+            counts.computed_gotos++
+        }
+    }
+}
+
+//! two rules, the second with an `if` of the rule author's own
+let private CENSUS_RULES = %stringify~
+    rule("a") {
+        lx |> emit(1)
+    }
+    rule("b") {
+        if (lx.tok.len > 0) {
+            lx |> emit(2)
+        }
+    }
+%%
+
+//! the census of `lex0` stamped from `CENSUS_RULES` with no shape
+//! arguments, for the JIT tier's choices when `jit_policy`
+def private census_of(t : T?; name : string; jit_policy : bool) : FlowCounts {
+    var census = new FlowCensus()
+    let text = stamped_module(CENSUS_RULES, [""])
+    let issues = compile_virtual(name, text, jit_policy, false) $(program) {
+        for_each_function(program.getThisModule, "lex0") $(var func) {
+            make_visitor(*census) $(adapter) {
+                visit(func, adapter)
+            }
+        }
+        return ""
+    }
+    t |> equal(issues, "")
+    let counts = census.counts
+    unsafe {
+        delete census
+    }
+    return counts
+}
+
+[test(description = "with no shape arguments the interpreter tier gets table mode with the computed-goto dispatch and the JIT tier goto mode with the if chain; every if and while the macro emits is marked generated, the rule author's own is not")]
+def test_default_shape_structure(t : T?) {
+    let interp = census_of(t, "census_interp.das", false)
+    t |> equal(interp.computed_gotos, 1)
+    t |> equal(interp.labels, 3)
+    t |> equal(interp.authored, 1)
+    t |> success(interp.generated > 0)
+    let jit = census_of(t, "census_jit.das", true)
+    t |> equal(jit.computed_gotos, 1)
+    t |> equal(jit.labels, 4)
+    t |> equal(jit.authored, 1)
+    t |> success(jit.generated > 0)
+}
+
+[test(description = "gen_variants.das writes each file once, reports it unchanged on a rerun, replaces stale output, and writes nothing when c_lexer.das holds no c_next")]
+def test_gen_variants_writes(t : T?) {
+    var error = ""
+    let dir = create_temp_directory("dasflex_gen", error)
+    t |> equal(error, "")
+    let source = path_join(dir, "c_lexer.das")
+    fwrite(source, "def c_next(var lx : FlexLexer) : bool \{\n    rule(\"a\") \{\n    \}\n\}\n")
+    let goto_file = path_join(dir, "c_lexer_goto.das")
+    let variants_file = path_join(dir, "c_lexer_variants.das")
+    let first <- write_generated(dir)
+    t |> success(first.ok)
+    t |> equal(first.lines, ["{goto_file}: written", "{variants_file}: written"])
+    let rerun <- write_generated(dir)
+    t |> equal(rerun.lines, ["{goto_file}: unchanged", "{variants_file}: unchanged"])
+    let fresh = fread(goto_file)
+    t |> success(find(fresh, "    rule(\"a\") \{\n") >= 0, fresh)
+    fwrite(goto_file, "stale")
+    let stale <- write_generated(dir)
+    t |> equal(stale.lines, ["{goto_file}: written", "{variants_file}: unchanged"])
+    t |> equal(fread(goto_file), fresh)
+    fwrite(source, "def other() \{\n\}\n")
+    let absent <- write_generated(dir)
+    t |> success(!absent.ok)
+    t |> equal(absent.lines, ["{dir}/c_lexer.das: no `def c_next(` found"])
+    t |> equal(rule_lines("def other() \{\n    rule(\"a\")\n\}\n"), "")
+    rmdir_rec(dir, error)
+    t |> equal(error, "")
 }
