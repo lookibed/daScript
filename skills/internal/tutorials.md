@@ -22,6 +22,7 @@ tutorials/integration/c/   - C integration tutorials
 tutorials/integration/cpp/ - C++ integration tutorials
 tutorials/sql/             - dasSQLITE (NN-name.das, hyphenated)
 tutorials/dasAudio/        - dasAudio
+tutorials/dasFlex/         - dasFlex (lexer generator)
 tutorials/dasHV/           - dasHV (HTTP/WebSocket)
 tutorials/dasMinfft/       - dasMinfft (FFT/DCT)
 tutorials/dasOPENAI/       - dasOPENAI (LLM API)
@@ -41,7 +42,7 @@ Match the area you're adding to. The conventions in use:
 
 | Area | Pattern | Example |
 |---|---|---|
-| `language/`, `macros/`, `dasAudio/`, `dasHV/`, `dasPEG/`, `dasPUGIXML/`, `dasStbImage/` | `NN_topic.das` (underscore) | `01_hello_sound.das` |
+| `language/`, `macros/`, `dasAudio/`, `dasFlex/`, `dasHV/`, `dasPEG/`, `dasPUGIXML/`, `dasStbImage/` | `NN_topic.das` (underscore) | `01_hello_sound.das` |
 | `sql/` | `NN-topic.das` (hyphen) | `01-version.das` |
 | `daStrudel/` | `daStrudel_NN_topic.das` (full prefix) | `daStrudel_01_hello_pattern.das` |
 
