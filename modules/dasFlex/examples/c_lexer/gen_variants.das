@@ -81,19 +81,27 @@ def file_text(target : Target; rules : string) : string {
     }
 }
 
+//! every file the generator writes into `dir`, with the text it
+//! writes there; empty when `dir/c_lexer.das` holds no `def c_next(`
+def generated_files(dir : string) : array<tuple<path : string; text : string>> {
+    let rules = rule_lines(replace(fread(path_join(dir, "c_lexer.das")), "\r\n", "\n"))
+    return <- [for (target in targets());
+               (path = path_join(dir, target.file), text = file_text(target, rules));
+               where !empty(rules)]
+}
+
 [export]
 def main() : int {
     let here = dir_name(string(get_line_info().fileInfo.name))
     let dir = empty(here) ? "." : here
-    let rules = rule_lines(fread(path_join(dir, "c_lexer.das")))
-    if (empty(rules)) {
+    let files <- generated_files(dir)
+    if (empty(files)) {
         print("{dir}/c_lexer.das: no `def c_next(` found\n")
         return 1
     }
-    for (target in targets()) {
-        let path = path_join(dir, target.file)
-        let written = fwrite_if_changed(path, file_text(target, rules))
-        print("{path}: {written ? "written" : "unchanged"}\n")
+    for (f in files) {
+        let written = fwrite_if_changed(f.path, f.text)
+        print("{f.path}: {written ? "written" : "unchanged"}\n")
     }
     return 0
 }

@@ -10,6 +10,8 @@ require strings
 require daslib/strings_boost
 require flex/flex_macro
 require _flex_test_helpers
+require daslib/fio
+require ../examples/c_lexer/gen_variants.das
 
 enum TTok {
     IF = 1
@@ -705,5 +707,16 @@ def test_bad_shape_values(t : T?) {
              "[flex] matcher is call or inline, not loop"]) {
         let res <- shape_streams("bad_shape.das", rules, [shape], "a")
         t |> success(find(res.issues, want) >= 0, res.issues)
+    }
+}
+
+[test(description = "c_lexer_goto.das and c_lexer_variants.das hold what gen_variants.das writes from the rules of c_next in c_lexer.das")]
+def test_c_lexer_variants_generated(t : T?) {
+    let here = dir_name(string(get_line_info().fileInfo.name))
+    let files <- generated_files(path_join(empty(here) ? "." : here, "../examples/c_lexer"))
+    t |> equal(length(files), 2)
+    for (f in files) {
+        t |> success(replace(fread(f.path), "\r\n", "\n") == f.text,
+                     "{f.path} is not the gen_variants.das output - run it, never edit by hand")
     }
 }

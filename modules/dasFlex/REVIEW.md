@@ -50,7 +50,8 @@ both with `--dump` and diff.
 **A diff that edits `examples/c_lexer/c_lexer_goto.das` or `examples/c_lexer/c_lexer_variants.das`
 by hand, or changes the rules of `c_next` in `c_lexer.das` without running
 `examples/c_lexer/gen_variants.das`, is a defect** - the two files are the generator's output, one
-copy of the rules per scanner shape.
+copy of the rules per scanner shape; `tests/flex_tests.das` compares them with it, and weakening
+that check is a defect too.
 
 **A diff that gives a front end - the `%flex~` reader or a new one - its own table builder, its own
 scanner emission, or a path to the tables that does not pass a `FlexSpec` to `flex_generate`, is a
