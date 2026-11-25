@@ -13,6 +13,7 @@ require math
 require daslib/strings_boost
 
 require lr1/lr1_lalr
+require flex/flex_macro
 require bison/lr_parse
 require bison/prec
 require bison/grammar_text
@@ -243,18 +244,6 @@ def private plan_values(var spec : BisonSpec; g : TextGrammar) : BisonValues {
         check_action(spec, vals, g.builder.prods[i].lhs, i)
     }
     return <- vals
-}
-
-//! the private global `name` initialized as
-//! `to_array_move([vals...])`
-def private table_global(name : string; vals : array<auto>; at : LineInfo;
-                         var errors : das_string) : bool {
-    var init = convert_to_expression(vals, at)
-    if (!(compiling_module() |> add_global_private_var(name, at, init))) {
-        errors := "can't add the global {name}"
-        return false
-    }
-    return true
 }
 
 //! the name of the private function production `i`'s action becomes
@@ -545,12 +534,6 @@ def private make_driver(spec : BisonSpec; g : TextGrammar; t : LalrTables; vals 
     }
     force_generated(body, true)
     return body
-}
-
-//! the annotation's string argument `name`, or `absent`
-def private string_arg(args : AnnotationArgumentList; name, absent : string) : string {
-    let arg = find_arg(args, name)
-    return arg is tString ? arg as tString : absent
 }
 
 //! The annotation's arguments: the token enum, the lexer, and

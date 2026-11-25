@@ -6,8 +6,8 @@ doc: `ARCHITECTURE.md`.
 **A diff under `bison/` that adds a `require` of a module other than one under `bison/`, one under
 `daslib/`, a builtin module the daslang executable registers itself (such as `strings` or
 `math`), dasLR1's `lr1/lr1_lalr`, or - in `bison/bison_parser.das` and `bison/bison_macro.das`
-only - dasFlex's `flex/flex`, is a defect** - the module is reused by programs that load nothing
-else under `modules/` but dasLR1 and dasFlex.
+only - dasFlex's `flex/flex` or `flex/flex_macro`, is a defect** - the module is reused by
+programs that load nothing else under `modules/` but dasLR1 and dasFlex.
 
 **A diff that makes `lr_parse` take an action from `alt`, or report `expected` other than through
 the reduce chains from the stack, is a defect** (`ARCHITECTURE.md#driver`).
