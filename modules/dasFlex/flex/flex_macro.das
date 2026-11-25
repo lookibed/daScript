@@ -312,14 +312,25 @@ def private collect_rules(var spec : FlexSpec; body : ExprBlock?; lx : string) {
 
 //! the control flow the macro emits is marked generated, so a
 //! complexity lint counts the user's rule bodies and not the scanner
-//! skeleton; a block from `qmacro_block` is walked one level down
+//! skeleton: every `if` and `while` of `e`, code the macro wrote
+//! whole, through the blocks, branches and bodies it holds
 def private mark_generated(var e : ExpressionPtr) {
     if (e is ExprBlock) {
         for (st in (e as ExprBlock).list) {
             mark_generated(st)
         }
-    } elif (e is ExprIfThenElse || e is ExprWhile || e is ExprFor) {
+    } elif (e is ExprUnsafe) {
+        mark_generated((e as ExprUnsafe).body)
+    } elif (e is ExprIfThenElse) {
         e.genFlags.generated = true
+        var ifte = e as ExprIfThenElse
+        mark_generated(ifte.if_true)
+        if (ifte.if_false != null) {
+            mark_generated(ifte.if_false)
+        }
+    } elif (e is ExprWhile) {
+        e.genFlags.generated = true
+        mark_generated((e as ExprWhile).body)
     }
 }
 
@@ -554,7 +565,7 @@ def private merged_table(t : FlexTables) : array<int> {
 //! (`\n` is a class of its own, one compare per byte)
 def private make_inline_matcher(lx, g_merged, g_class, g_start : string;
                                 nclasses, nl_class : int) : array<ExpressionPtr> {
-    return <- qmacro_block_to_array() {
+    var out <- qmacro_block_to_array() {
         unsafe {
             let flex`data = $i(lx).data
             let flex`tbl = addr($i(g_merged)[0])
@@ -584,13 +595,17 @@ def private make_inline_matcher(lx, g_merged, g_class, g_start : string;
             }
         }
     }
+    for (e in out) {
+        mark_generated(e)
+    }
+    return <- out
 }
 
 //! the token is the matched span; line and column move by the
 //! newlines the matcher counted on the way (`nl` of them, the last
 //! one ending at `nl_last`), so no byte of the token is read twice
 def private make_token_set(lx : string) : array<ExpressionPtr> {
-    return <- qmacro_block_to_array() {
+    var out <- qmacro_block_to_array() {
         $i(lx).tok.start = $i(lx).pos
         $i(lx).tok.len = flex`len
         $i(lx).tok.text = ""
@@ -604,6 +619,10 @@ def private make_token_set(lx : string) : array<ExpressionPtr> {
         }
         $i(lx).pos += flex`len
     }
+    for (e in out) {
+        mark_generated(e)
+    }
+    return <- out
 }
 
 //! the names of the private globals that hold one scanner's tables
@@ -695,7 +714,9 @@ def private make_scanner_body(spec : FlexSpec; g : TableGlobals; t : FlexTables;
     top.genFlags.generated = true
     var loop_body = (top as ExprWhile).body as ExprBlock
     for (st in loop_body.list) {
-        mark_generated(st)
+        if (st is ExprIfThenElse) {
+            st.genFlags.generated = true
+        }
     }
     return newBody
 }
