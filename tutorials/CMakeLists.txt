@@ -68,6 +68,11 @@ file(GLOB DASPEG_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/dasPEG/*.das
 )
 
+# Install dasFlex tutorial .das files
+file(GLOB DASFLEX_TUTORIAL_SOURCES
+    ${PROJECT_SOURCE_DIR}/tutorials/dasFlex/*.das
+)
+
 # Install daStrudel tutorial .das files
 file(GLOB DASTRUDEL_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/daStrudel/*.das
@@ -134,6 +139,7 @@ SET(ALL_TUTORIAL_SOURCES
     ${LANGUAGE_TUTORIAL_SOURCES}
     ${MACRO_TUTORIAL_SOURCES}
     ${DASPEG_TUTORIAL_SOURCES}
+    ${DASFLEX_TUTORIAL_SOURCES}
     ${DASTRUDEL_TUTORIAL_SOURCES}
     ${JSONRPC_TUTORIAL_SOURCES}
 )

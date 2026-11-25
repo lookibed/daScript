@@ -11,10 +11,10 @@ require dastest/test_shape
 // gates its tests there.
 
 let TEST_ROOTS <- [
-    "modules/dasAudio/tests", "modules/dasGLTF/tests", "modules/dasGlfw/tests",
-    "modules/dasLR1/tests", "modules/dasLiveHost/tests", "modules/dasMeshOptimizer/tests",
-    "modules/dasOPENAI/tests", "modules/dasOpenGL/tests", "modules/dasPEG/tests",
-    "modules/dasStbImage/tests"
+    "modules/dasAudio/tests", "modules/dasFlex/tests", "modules/dasGLTF/tests",
+    "modules/dasGlfw/tests", "modules/dasLR1/tests", "modules/dasLiveHost/tests",
+    "modules/dasMeshOptimizer/tests", "modules/dasOPENAI/tests", "modules/dasOpenGL/tests",
+    "modules/dasPEG/tests", "modules/dasStbImage/tests"
 ]
 
 [export]

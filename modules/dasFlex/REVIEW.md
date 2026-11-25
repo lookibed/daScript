@@ -66,3 +66,7 @@ is a defect** - two rules declaring the same local would collide (`ARCHITECTURE.
 **A diff that makes a rule whose body has no `group` or `group_span` call pay for groups - a regex
 compiled, a global added, or a regex run for it, or a group field written in the scanner loop - is a
 defect** - the re-match is paid only by the rules that ask (`ARCHITECTURE.md#groups`).
+
+**Weakening the censuses in `REVIEW.das` - every `flex/*.das` registered in `.das_module` and every
+name registered there on disk, every test file in `tests/` named by a `das_lane_dastest_target` in
+`CMakeLists.txt` - is a defect.**
