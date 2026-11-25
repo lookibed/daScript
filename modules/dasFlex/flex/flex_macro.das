@@ -340,13 +340,12 @@ def private int_table_global(name : string; vals : array<int>; at : LineInfo;
 def private regex_global(name, pattern : string; at : LineInfo; var errors : das_string) : bool {
     var init = new ExprCall(at = at, name := "flex_group_regex")
     init.arguments |> emplace_new <| new ExprConstString(at = at, value := pattern)
-    var vvar <- new Variable(at = at, name := name, init = init,
-                             _type = new TypeDecl(at = at, baseType = Type.autoinfer,
-                                                  flags = TypeDeclFlags.removeConstant))
-    vvar.flags.generated = true
-    vvar.flags.private_variable = true
-    vvar.flags.init_via_move = true
-    if (!(compiling_module() |> add_variable(vvar))) {
+    var typ = new TypeDecl(at = at, baseType = Type.autoinfer, flags = TypeDeclFlags.removeConstant)
+    let added = compiling_module() |> add_global_var(name, typ, at, true) $(var v) {
+        v.init = init
+        v.flags.init_via_move = true
+    }
+    if (!added) {
         errors := "can't add the global {name}"
         return false
     }
