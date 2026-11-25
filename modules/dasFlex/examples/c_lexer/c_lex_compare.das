@@ -40,6 +40,21 @@ struct Tok {
 def is_ident_start(c : int) : bool => is_alpha(c) || c == '_'
 def is_ident_char(c : int) : bool => is_alpha(c) || is_number(c) || c == '_'
 
+//! the position past the `*/` closing a block comment whose body
+//! starts at `from`, and the newlines the comment holds
+def block_comment_end(d : array<uint8> implicit; from : int) : tuple<past : int; newlines : int> {
+    let n = length(d)
+    var p = from
+    var newlines = 0
+    while (p + 1 < n && !(int(d[p]) == '*' && int(d[p + 1]) == '/')) {
+        if (int(d[p]) == '\n') {
+            newlines++
+        }
+        p++
+    }
+    return (past = p + 2, newlines = newlines)
+}
+
 //! the probe's hand-written lexer: raw tokens, no filter (keywords by
 //! table, typedef names by `typedefs`)
 def lex_probe(text : string;  // nolint:STYLE038 - the probe's lexer kept whole, as the reference
@@ -67,14 +82,9 @@ def lex_probe(text : string;  // nolint:STYLE038 - the probe's lexer kept whole,
                 continue
             }
             if (c == '/' && i + 1 < n && int(d[i + 1]) == '*') {
-                i += 2
-                while (i + 1 < n && !(int(d[i]) == '*' && int(d[i + 1]) == '/')) {
-                    if (int(d[i]) == '\n') {
-                        line++
-                    }
-                    i++
-                }
-                i += 2
+                let skip = block_comment_end(d, i + 2)
+                i = skip.past
+                line += skip.newlines
                 continue
             }
             if (c == '/' && i + 1 < n && int(d[i + 1]) == '/') {
@@ -336,15 +346,9 @@ def lex_regex(text : string; typedefs : table<string; int>;
             }
             let kind = rules[best].kind
             if (kind == -4) {
-                // a comment: skip to the closing */
-                var p = best_end
-                while (p + 1 < n && !(int(d[p]) == '*' && int(d[p + 1]) == '/')) {
-                    if (int(d[p]) == '\n') {
-                        line++
-                    }
-                    p++
-                }
-                pos = p + 2
+                let skip = block_comment_end(d, best_end)
+                pos = skip.past
+                line += skip.newlines
                 continue
             }
             let start = pos
