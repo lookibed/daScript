@@ -17,6 +17,8 @@ IF(NOT DAS_FLEX_INCLUDED)
         FILES
             modules/dasFlex/tests/flex_tests.das
             modules/dasFlex/tests/flex_reader_tests.das
+        JIT_FILES
+            modules/dasFlex/tests/flex_tests.das
     )
 
     ADD_EXAMPLE_RUN(tutorials/dasFlex/01_json_tokens.das)
