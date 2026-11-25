@@ -23,7 +23,9 @@ scanner that drives it. It depends on `daslib/regex` for parsing regex text and 
 - `flex/flex_macro.das` - the `[flex]` function annotation and `[flex_text]`, the one the reader's
   output carries: each collects its rules into a `FlexSpec`, and `flex_generate` builds the tables
   through `flex_tables`, stores them as private module globals and rewrites the function body into
-  the scanner loop, in table or goto mode. The only file that touches the AST of a rule set.
+  the scanner loop, in table or goto mode. The only file that touches the AST of a rule set. Two
+  helpers are public for other table-driven annotations: `table_global` (an array as a private
+  move-initialized module global) and `string_arg` (an annotation's string argument or a default).
 - `flex/flex_reader.das` - the `%flex~` reader macro: flex-like text to the source of a
   `[flex_text]` function (`flex_reader_source`). Text in, text out; no regex, no tables.
 - `examples/c_lexer/` - the C11 lexer on dasFlex (`c_lexer.das`), the same rules under the other

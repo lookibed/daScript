@@ -324,9 +324,8 @@ def private mark_generated(var e : ExpressionPtr) {
 }
 
 //! the private global `name` initialized as
-//! `to_array_move([vals...])`
-def private int_table_global(name : string; vals : array<int>; at : LineInfo;
-                             var errors : das_string) : bool {
+//! `to_array_move([vals...])`, its type that of the array
+def table_global(name : string; vals : array<auto>; at : LineInfo; var errors : das_string) : bool {
     var init = convert_to_expression(vals, at)
     if (!(compiling_module() |> add_global_private_var(name, at, init))) {
         errors := "can't add the global {name}"
@@ -703,7 +702,7 @@ def private make_scanner_body(spec : FlexSpec; g : TableGlobals; t : FlexTables;
 
 //! the annotation's string argument `name`, or `absent` when the
 //! annotation omits it
-def private string_arg(args : AnnotationArgumentList; name, absent : string) : string {
+def string_arg(args : AnnotationArgumentList; name, absent : string) : string {
     let arg = find_arg(args, name)
     return arg is tString ? arg as tString : absent
 }
@@ -760,14 +759,14 @@ def private flex_generate(var func : FunctionPtr; spec : FlexSpec; shape : FlexS
     let lx = string(func.arguments[0].name)
     to_log(LOG_INFO, "[flex] {func.name}: mode {shape.mode} dispatch {shape.dispatch}\n")
     let g = table_globals(spec.func_name)
-    return false if (!int_table_global(g.start, t.start, func.at, errors))
+    return false if (!table_global(g.start, t.start, func.at, errors))
     if (shape.mode == "table" && shape.matcher == "inline") {
-        return false if (!int_table_global(g.merged, merged_table(t), func.at, errors)
-            || !int_table_global(g.class_of, t.class_of, func.at, errors))
+        return false if (!table_global(g.merged, merged_table(t), func.at, errors)
+            || !table_global(g.class_of, t.class_of, func.at, errors))
     } elif (shape.mode == "table") {
-        return false if (!int_table_global(g.next, t.next, func.at, errors)
-            || !int_table_global(g.accept, t.accept, func.at, errors)
-            || !int_table_global(g.class_of, t.class_of, func.at, errors))
+        return false if (!table_global(g.next, t.next, func.at, errors)
+            || !table_global(g.accept, t.accept, func.at, errors)
+            || !table_global(g.class_of, t.class_of, func.at, errors))
     }
     for (arm in spec.arms) {
         continue if (empty(arm.group_re))
