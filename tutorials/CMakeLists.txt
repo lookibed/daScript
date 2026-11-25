@@ -68,7 +68,7 @@ file(GLOB DASPEG_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/dasPEG/*.das
 )
 
-# Install dasFlex tutorial .das files
+# dasFlex tutorial .das files for the dry_run_tutorials sweep
 file(GLOB DASFLEX_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/dasFlex/*.das
 )
