@@ -7,6 +7,7 @@ options no_unused_function_arguments = false
 module bison_macro shared public
 
 require daslib/ast_boost
+require daslib/ast_match
 require daslib/templates_boost
 require math
 require daslib/strings_boost
@@ -93,22 +94,17 @@ def private block_yields(var blk : ExprBlock?) : bool {
     return yields
 }
 
-def private const_string(e : Expression const?) : tuple<ok : bool; value : string> {
-    return (ok = false, value = "") if (!(e is ExprConstString))
-    return (ok = true, value = string((e as ExprConstString).value))
-}
-
 def private collect_rule(var spec : BisonSpec; call : ExprCall?) {
     let nargs = length(call.arguments)
-    let lhs = nargs >= 2 ? const_string(call.arguments[0]) : (ok = false, value = "")
-    let rhs = nargs >= 2 ? const_string(call.arguments[1]) : (ok = false, value = "")
+    let lhs = nargs >= 2 ? extract_const_string(call.arguments[0]) : (false, "")
+    let rhs = nargs >= 2 ? extract_const_string(call.arguments[1]) : (false, "")
     let has_block = nargs == 3 && call.arguments[2] is ExprMakeBlock
-    if (!lhs.ok || !rhs.ok || (nargs == 3 && !has_block) || nargs > 3) {
+    if (!lhs._0 || !rhs._0 || (nargs == 3 && !has_block) || nargs > 3) {
         fail_at(spec, "rule(\"lhs\", \"rhs\") or rule(\"lhs\", \"rhs\") <| "
                 + "$(values) \{ action \} expected", call)
         return
     }
-    var r = BisonRule(site = call, lhs = lhs.value, rhs = rhs.value)
+    var r = BisonRule(site = call, lhs = lhs._1, rhs = rhs._1)
     if (has_block) {
         r.action = call.arguments[2] |> unquote_block
         r.yields = block_yields(r.action)
@@ -121,26 +117,25 @@ def private collect_prec(var spec : BisonSpec; call : ExprCall?) {
     pl.assoc = (call.name == "prec_left" ? PrecAssoc.left
         : (call.name == "prec_right" ? PrecAssoc.right : PrecAssoc.nonassoc))
     for (a in call.arguments) {
-        let s = const_string(a)
-        if (!s.ok) {
+        let s = extract_const_string(a)
+        if (!s._0) {
             fail_at(spec, "{call.name} takes token names as strings", call)
             return
         }
-        pl.names |> push(s.value)
+        pl.names |> push(s._1)
     }
     spec.precs |> emplace(pl)
     spec.prec_sites |> push(call)
 }
 
 def private collect_root(var spec : BisonSpec; call : ExprCall?) {
-    let name = (length(call.arguments) == 1 ? const_string(call.arguments[0])
-        : (ok = false, value = ""))
-    if (!name.ok) {
+    let name = length(call.arguments) == 1 ? extract_const_string(call.arguments[0]) : (false, "")
+    if (!name._0) {
         fail_at(spec, "root takes a rule name literal: root(\"rule\")", call)
     } elif (!empty(spec.root)) {
         fail_at(spec, "root is named once; root(\"{spec.root}\") came first", call)
     } else {
-        spec.root = name.value
+        spec.root = name._1
     }
 }
 

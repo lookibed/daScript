@@ -93,7 +93,9 @@ A cell left with one action is resolved by precedence. A cell left with more is 
 default picks the shift, or else the production that comes first in the grammar, and the cell
 still counts as a conflict - its losers stay in `alt`, `conflicts` counts it, and the report lists
 it in `bison -v`'s words (`State N conflicts: K shift/reduce, M reduce/reduce`, then each action,
-the losers in brackets). The counts are bison's: one shift/reduce for a cell with a shift and a
+the losers in brackets). Those words are bison's (`shift, and go to state 3`), so `prec.das` words
+an action itself rather than through the core's `describe_action`, whose `shift to 3` is
+dasLR1's own. The counts are bison's: one shift/reduce for a cell with a shift and a
 reduce, one reduce/reduce for each reduce past the first. Every action that leaves a cell is in
 that cell's `PrecCell.removed`.
 
