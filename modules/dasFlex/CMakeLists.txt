@@ -4,6 +4,9 @@ IF(NOT DAS_FLEX_INCLUDED)
 
     ADD_MODULE_DAS_FROM_DESCRIPTOR(flex flex)
 
+    set_property(GLOBAL APPEND PROPERTY DAS_ARCH_EXTRACT_SPECS
+        "modules/dasFlex/flex|modules/dasFlex|${DAS_INSTALL_MODULESDIR}/dasFlex")
+
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/modules/dasFlex/flex
         DESTINATION ${DAS_INSTALL_MODULESDIR}/dasFlex
         FILES_MATCHING
