@@ -4,6 +4,9 @@ IF(NOT DAS_BISON_INCLUDED)
 
     ADD_MODULE_DAS_FROM_DESCRIPTOR(bison bison)
 
+    set_property(GLOBAL APPEND PROPERTY DAS_ARCH_EXTRACT_SPECS
+        "modules/dasBison/bison|modules/dasBison|${DAS_INSTALL_MODULESDIR}/dasBison")
+
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/modules/dasBison/bison
         DESTINATION ${DAS_INSTALL_MODULESDIR}/dasBison
         FILES_MATCHING
