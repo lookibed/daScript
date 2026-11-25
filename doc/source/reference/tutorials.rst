@@ -10,7 +10,7 @@ This section provides hands-on tutorials organized by topic:
 * **C Integration Tutorials** — embed daslang in a C host using the ``daScriptC.h`` API
 * **C++ Integration Tutorials** — embed daslang in a C++ host using the native ``daScript.h`` API
 * **Macro Tutorials** — write compile-time code transformations using the daslang macro system
-* **Module Tutorials** — dasHV (HTTP), dasLLAMA (local LLM inference), dasOPENAI (LLM / OpenAI-compatible API), dasPUGIXML (XML), dasStbImage, dasAudio, dasMinfft (FFT / DCT), dasVulkan and OpenGL / WebGL2 (graphics), dasPEG (parser generator)
+* **Module Tutorials** — dasHV (HTTP), dasLLAMA (local LLM inference), dasOPENAI (LLM / OpenAI-compatible API), dasPUGIXML (XML), dasStbImage, dasAudio, dasMinfft (FFT / DCT), dasVulkan and OpenGL / WebGL2 (graphics), dasPEG (parser generator), dasFlex (lexer generator)
 
 .. _tutorials_language:
 
@@ -675,6 +675,29 @@ Run any tutorial from the project root::
    tutorials/dasPEG_05_json_parser.rst
    tutorials/dasPEG_06_debugging.rst
    tutorials/dasPEG_07_basic_interpreter.rst
+
+.. _tutorials_dasflex:
+
+dasFlex (Lexer Generator) Tutorials
+===================================
+
+These tutorials cover the ``flex`` module --- daslang's lexer generator.
+Rules are regular expressions in a ``[flex]`` function or in flex-like
+``%flex~`` text; the macro builds one deterministic automaton per rule set
+at compile time and turns the function into the scanner.
+
+The companion ``.das`` files are in ``tutorials/dasFlex/``.
+
+Run any tutorial from the project root::
+
+   daslang.exe tutorials/dasFlex/01_json_tokens.das
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/dasFlex_01_json_tokens.rst
+   tutorials/dasFlex_02_flex_reader.rst
+   tutorials/dasFlex_03_groups.rst
 
 .. _tutorials_imgui:
 
