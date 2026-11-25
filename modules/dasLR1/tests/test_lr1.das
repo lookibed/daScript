@@ -6,18 +6,21 @@ options no_unused_function_arguments = false
 require dastest/testing_boost public
 require lr1/lr1
 require strings
+require daslib/strings_boost
 
 // The LALR(1) engine on grammars assembled by hand: acceptance, the viable-prefix refusal, the next-byte
 // set, probing whole strings, epsilon and left-recursive rules, and the verdicts on a conflicting and an
 // ill-formed grammar.
 
-def private digits() : ByteSet {
+def private range_set(lo, hi : int) : ByteSet {
     var bs : ByteSet
-    for (c in range('0', '9' + 1)) {
-        bs[c] = true
+    for (b in range(lo, hi + 1)) {
+        bs[b] = true
     }
     return bs
 }
+
+def private digits() : ByteSet => range_set('0', '9')
 
 def private seq(var out : array<GrammarSym>; items : array<GrammarSym>) {
     out |> push_from(items)
@@ -227,6 +230,432 @@ def test_lr1_byte_classes(t : T?) {
     }
 }
 
+// ===== the integer-terminal core =====
+
+// `lhs ::= words` into `gb`: a word starting with an upper-case
+// letter is a rule, any other a terminal
+def private prod(var gb : LalrBuilder; lhs : string; text : string) {
+    var rhs : array<int>
+    for (w in split(text, " ")) {
+        continue if (empty(w))
+        let c = first_character(w)
+        rhs |> push(c >= 'A' && c <= 'Z' ? rule_sym(rule_id(gb, w)) : term_sym(term_id(gb, w)))
+    }
+    add_production(gb, rule_id(gb, lhs), rhs)
+}
+
+def private tokens(gb : LalrBuilder; text : string) : array<int> =>
+    <- [for (w in split(text, " ")); gb.term_index?[w] ?? -1; where !empty(w)]
+
+// one stack over the primary action of each cell: whether `terms` is
+// a sentence, and the productions reduced
+def private parse_terms(tb : LalrTables;
+                        terms : array<int>) : tuple<ok : bool; reductions : array<int>> {
+    var res : tuple<ok : bool; reductions : array<int>>
+    return <- res if (!empty(tb.err))
+    var stack <- [0]
+    var pos = 0
+    for (_ in range(1000000)) {
+        let term = pos < length(terms) ? terms[pos] : tb.eof
+        break if (term < 0 || term > tb.eof || (term == tb.eof && pos < length(terms)))
+        let a = tb.action[stack[length(stack) - 1] * tb.nterms + term]
+        if (a == ACCEPT) {
+            res.ok = true
+            break
+        } elif (a > 0) {
+            stack |> push(a - 1)
+            pos++
+        } elif (a < 0) {
+            let p = -1 - a
+            res.reductions |> push(p)
+            stack |> resize(length(stack) - length(tb.prods[p].rhs))
+            let to = tb.goto_nt[stack[length(stack) - 1] * tb.nrules + tb.prods[p].lhs]
+            break if (to < 0)
+            stack |> push(to)
+        } else {
+            break
+        }
+    }
+    return <- res
+}
+
+def private parses(tb : LalrTables; terms : array<int>) : bool => parse_terms(tb, terms).ok
+
+def private expr_grammar() : LalrBuilder {
+    var gb : LalrBuilder
+    prod(gb, "E", "E + T")
+    prod(gb, "E", "T")
+    prod(gb, "T", "T * F")
+    prod(gb, "T", "F")
+    prod(gb, "F", "( E )")
+    prod(gb, "F", "id")
+    return <- gb
+}
+
+[test(description = "the textbook expression grammar over named terminals builds to its twelve LALR(1) states with no conflict and no conflict line, the end of input named last, and reduces by precedence")]
+def test_lalr_expression_grammar(t : T?) {
+    let gb <- expr_grammar()
+    let tb <- build_lalr(gb, gb.rule_index?["E"] ?? -1)
+    t |> equal(tb.err, "")
+    t |> equal(tb.nstates, 12)
+    t |> equal(tb.conflicts, 0)
+    t |> equal(length(tb.alt), 0)
+    t |> equal(length(describe_conflicts(tb)), 0)
+    t |> equal(tb.nterms, 6)
+    t |> equal(tb.eof, 5)
+    t |> equal(tb.term_names[tb.eof], "<end>")
+    t |> equal(tb.rule_names[tb.nrules - 1], "<start>")
+    for (s in ["id", "id + id * id", "( id + id ) * id", "( ( id ) )"]) {
+        t |> success(parses(tb, tokens(gb, s)), s)
+    }
+    for (s in ["", "id +", "id id", "( id", "id + * id"]) {
+        t |> success(!parses(tb, tokens(gb, s)), s)
+    }
+    let r <- parse_terms(tb, tokens(gb, "id + id * id"))
+    let names <- [for (p in r.reductions); describe_prod(tb, p)]
+    t |> equal(names[length(names) - 2], "T ::= T * F")
+    t |> equal(names[length(names) - 1], "E ::= E + T")
+    t |> equal(describe_action(tb, ACCEPT), "accept")
+    t |> equal(describe_action(tb, LALR_ACCEPT), "accept")
+    t |> equal(describe_action(tb, 0), "error")
+    t |> equal(describe_action(tb, 4), "shift to 3")
+    t |> equal(describe_action(tb, reduce_action(1)), "reduce E ::= E + T")
+    t |> equal(reduce_action(0), ACCEPT)
+    t |> success(is_shift(4) && !is_shift(ACCEPT) && !is_shift(-2) && !is_shift(0))
+}
+
+[test(description = "the dangling else keeps exactly one shift/reduce cell with both actions, the shift primary and the reduce in alt, and describe_conflicts names the cell's terminal and every action")]
+def test_lalr_dangling_else(t : T?) {
+    var gb : LalrBuilder
+    prod(gb, "S", "if C then S")
+    prod(gb, "S", "if C then S else S")
+    prod(gb, "S", "other")
+    prod(gb, "C", "cond")
+    let tb <- build_lalr(gb, rule_id(gb, "S"))
+    t |> equal(tb.err, "")
+    t |> equal(tb.conflicts, 1)
+    t |> equal(length(tb.alt), 1)
+    let lines <- describe_conflicts(tb)
+    t |> equal(length(lines), 1)
+    t |> success(find(lines[0], "on else: shift to") >= 0, lines[0])
+    t |> success(find(lines[0], "| reduce S ::= if C then S") >= 0, lines[0])
+    t |> success(starts_with(tb.first_conflict, "shift/reduce conflict in state"),
+                 tb.first_conflict)
+    for (cell, extra in keys(tb.alt), values(tb.alt)) {
+        t |> equal(cell % tb.nterms, gb.term_index?["else"] ?? -1)
+        t |> success(is_shift(tb.action[cell]), "the shift stays primary")
+        t |> equal(length(extra), 1)
+        t |> success(extra[0] < 0, "the reduce is kept in alt")
+    }
+    let r <- parse_terms(tb, tokens(gb, "if cond then if cond then other else other"))
+    t |> success(r.ok)
+    let s = gb.rule_index?["S"] ?? -1
+    let ifs <- [for (p in r.reductions); describe_prod(tb, p);
+                where tb.prods[p].lhs == s && length(tb.prods[p].rhs) > 1]
+    t |> equal(ifs, ["S ::= if C then S else S", "S ::= if C then S"])
+}
+
+[test(description = "two rules deriving the same terminal keep a reduce/reduce cell on the end of input with both reductions")]
+def test_lalr_reduce_reduce(t : T?) {
+    var gb : LalrBuilder
+    prod(gb, "S", "A")
+    prod(gb, "S", "B")
+    prod(gb, "A", "x")
+    prod(gb, "B", "x")
+    let tb <- build_lalr(gb, rule_id(gb, "S"))
+    t |> equal(tb.conflicts, 1)
+    t |> success(starts_with(tb.first_conflict, "reduce/reduce conflict"), tb.first_conflict)
+    let lines <- describe_conflicts(tb)
+    t |> success(find(lines[0], "on <end>: reduce A ::= x | reduce B ::= x") >= 0, lines[0])
+}
+
+[test(description = "a reachable rule that derives no terminal string, or has no production, fails the build naming the rule and builds no tables, an unreachable one does not; an undeclared terminal, rule, root or left-hand side - negative or past the last rule - fails it too and builds no tables")]
+def test_lalr_ill_formed(t : T?) {
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "A x")
+        prod(gb, "A", "A y")
+        let tb <- build_lalr(gb, rule_id(gb, "S"))
+        t |> equal(tb.err, "rule 'A' derives no terminal string")
+        t |> equal(tb.err_rule, "A")
+        t |> equal(tb.nstates, 0)
+        t |> success(!parses(tb, tokens(gb, "x")))
+    }
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "x")
+        prod(gb, "S", "Empty")
+        t |> equal(build_lalr(gb, rule_id(gb, "S")).err, "rule 'Empty' derives no terminal string")
+    }
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "x")
+        prod(gb, "Dead", "Dead y")
+        let tb <- build_lalr(gb, rule_id(gb, "S"))
+        t |> equal(tb.err, "")
+        t |> success(parses(tb, tokens(gb, "x")))
+    }
+    var gb : LalrBuilder
+    declare_terms(gb, 2)
+    t |> equal(gb.term_names, ["#0", "#1"])
+    add_production(gb, rule_id(gb, "S"), [term_sym(0), term_sym(2)])
+    t |> equal(build_lalr(gb, 0).err, "production 0 of 'S' uses terminal 2, which is not declared")
+    var gb2 : LalrBuilder
+    add_production(gb2, rule_id(gb2, "S"), [rule_sym(5)])
+    t |> equal(build_lalr(gb2, 0).err, "production 0 of 'S' uses rule 5, which is not declared")
+    t |> equal(build_lalr(gb2, 3).err, "root rule 3 is not a declared rule")
+    t |> equal(build_lalr(gb2, -1).err, "root rule -1 is not a declared rule")
+    var gb3 : LalrBuilder
+    rule_id(gb3, "S")
+    add_production(gb3, 4, [term_sym(term_id(gb3, "x"))])
+    t |> equal(build_lalr(gb3, 0).err, "production 0 has left-hand side 4, not a declared rule")
+    var gb4 : LalrBuilder
+    let s4 = rule_id(gb4, "S")
+    let x4 = term_id(gb4, "x")
+    add_production(gb4, s4, [term_sym(x4)])
+    add_production(gb4, -1, [term_sym(0)])
+    let tb4 <- build_lalr(gb4, 0)
+    t |> equal(tb4.err, "production 1 has left-hand side -1, not a declared rule")
+    t |> success(tb4.nstates == 0 && empty(tb4.action) && empty(tb4.prods))
+}
+
+[test(description = "declare_terms extends the terminals already declared up to the count, naming each new id by number, and fresh_rule declares a rule rule_id never returns, even under the same name")]
+def test_lalr_builder_ids(t : T?) {
+    {
+        var gb : LalrBuilder
+        t |> equal(term_id(gb, "#1"), 0)
+        declare_terms(gb, 2)
+        t |> equal(length(gb.term_names), 2)
+        add_production(gb, rule_id(gb, "S"), [term_sym(0), term_sym(1)])
+        let tb <- build_lalr(gb, 0)
+        t |> equal(tb.err, "")
+        t |> success(parses(tb, [0, 1]))
+    }
+    {
+        var gb : LalrBuilder
+        term_id(gb, "x")
+        term_id(gb, "y")
+        declare_terms(gb, 2)
+        t |> equal(gb.term_names, ["x", "y"], "two declared terminals already meet a count of two")
+        declare_terms(gb, 3)
+        t |> equal(gb.term_names, ["x", "y", "#2"])
+    }
+    var gr : LalrBuilder
+    let fresh = fresh_rule(gr, "A")
+    let named = rule_id(gr, "A")
+    t |> success(fresh != named, "fresh {fresh}, named {named}")
+    t |> equal(rule_id(gr, "A"), named)
+}
+
+[test(description = "an epsilon production builds and accepts the empty and a non-empty sentence, and with no terminal declared at all the end of input is the only column, id 0, and the empty sentence is accepted")]
+def test_lalr_epsilon(t : T?) {
+    var gb : LalrBuilder
+    prod(gb, "L", "")
+    prod(gb, "L", "L item")
+    let tb <- build_lalr(gb, rule_id(gb, "L"))
+    t |> equal(tb.err, "")
+    t |> equal(tb.conflicts, 0)
+    t |> success(parses(tb, tokens(gb, "")))
+    t |> success(parses(tb, tokens(gb, "item item item")))
+    var gn : LalrBuilder
+    prod(gn, "S", "")
+    let tn <- build_lalr(gn, rule_id(gn, "S"))
+    t |> equal(tn.err, "")
+    t |> equal(tn.nterms, 1)
+    t |> equal(tn.eof, 0)
+    t |> success(parses(tn, tokens(gn, "")), "no declared terminal: the end of input is column 0")
+}
+
+[test(description = "over 3000 terminals, lookaheads 951 and 2999 stay apart where a 1024-wide lookahead field would key one item's 2999 as a later item's 951, and a 4096-terminal production ending in a rule parses: the item key packs no field of fixed width")]
+def test_lalr_wide_grammar(t : T?) {
+    {
+        var gb : LalrBuilder
+        declare_terms(gb, 3000)
+        let s = rule_id(gb, "S")
+        let a = rule_id(gb, "A")
+        add_production(gb, s, [rule_sym(a), term_sym(951)])
+        add_production(gb, s, [rule_sym(a), term_sym(2999)])
+        add_production(gb, a, [term_sym(10)])
+        add_production(gb, a, [term_sym(10), term_sym(11)])
+        let tb <- build_lalr(gb, s)
+        t |> equal(tb.err, "")
+        t |> equal(tb.conflicts, 0)
+        t |> equal(tb.nterms, 3001)
+        for (k in [951, 2999]) {
+            t |> success(parses(tb, [10, k]), "A ::= 10, then {k}")
+            t |> success(parses(tb, [10, 11, k]), "A ::= 10 11, then {k}")
+        }
+        t |> success(!parses(tb, [10, 1500]))
+        t |> success(!parses(tb, [10, 951 + 1024]),
+                     "a lookahead 1024 past a real one is not the real one")
+    }
+    var gb : LalrBuilder
+    declare_terms(gb, 2)
+    let s = rule_id(gb, "S")
+    let b = rule_id(gb, "B")
+    var long_rhs <- [for (_ in range(4096)); term_sym(0)]
+    long_rhs |> push(rule_sym(b))
+    add_production(gb, s, long_rhs)
+    add_production(gb, b, [term_sym(1)])
+    let tb <- build_lalr(gb, s)
+    t |> equal(tb.err, "")
+    var input <- [for (_ in range(4096)); 0]
+    input |> push(1)
+    t |> success(parses(tb, input))
+}
+
+[test(description = "a nullable rule lets FIRST and the lookaheads see past it, and FIRST reaches a rule through a chain declared after its user")]
+def test_lalr_nullable_first(t : T?) {
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "A B c")
+        prod(gb, "A", "a")
+        prod(gb, "B", "")
+        prod(gb, "B", "b")
+        let tb <- build_lalr(gb, rule_id(gb, "S"))
+        t |> equal(tb.err, "")
+        t |> equal(tb.conflicts, 0)
+        t |> success(parses(tb, tokens(gb, "a c")), "a c")
+        t |> success(parses(tb, tokens(gb, "a b c")), "a b c")
+    }
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "A D")
+        prod(gb, "D", "C")
+        prod(gb, "C", "B")
+        prod(gb, "B", "y")
+        prod(gb, "A", "x")
+        let tb <- build_lalr(gb, rule_id(gb, "S"))
+        t |> success(parses(tb, tokens(gb, "x y")),
+                     "x y through D ::= C ::= B, each declared after its user")
+    }
+    var gb : LalrBuilder
+    prod(gb, "S", "A D")
+    prod(gb, "D", "B c")
+    prod(gb, "A", "a")
+    prod(gb, "B", "")
+    prod(gb, "B", "b")
+    let tb <- build_lalr(gb, rule_id(gb, "S"))
+    t |> success(parses(tb, tokens(gb, "a c")), "FIRST(D) passes the nullable B")
+}
+
+[test(description = "an action two closure items add to one cell is one action, a cell of three reductions each added twice keeps two in alt, and the first conflict names the first cell's first other action")]
+def test_lalr_duplicate_actions(t : T?) {
+    {
+        var gb : LalrBuilder
+        prod(gb, "S", "x E y")
+        prod(gb, "S", "x E y w")
+        prod(gb, "E", "")
+        let tb <- build_lalr(gb, rule_id(gb, "S"))
+        t |> equal(tb.conflicts, 0)
+        t |> equal(length(tb.alt), 0)
+        t |> success(parses(tb, tokens(gb, "x y w")))
+    }
+    var gb : LalrBuilder
+    for (r in ["E", "F", "G"]) {
+        prod(gb, "S", "x {r} y")
+        prod(gb, "S", "x {r} y w")
+        prod(gb, r, "")
+    }
+    prod(gb, "S", "z H q")
+    prod(gb, "S", "z K q")
+    prod(gb, "H", "")
+    prod(gb, "K", "")
+    let tb <- build_lalr(gb, rule_id(gb, "S"))
+    t |> equal(tb.conflicts, 2)
+    let lines <- describe_conflicts(tb)
+    t |> equal(length(lines), 2)
+    t |> success(ends_with(lines[0], " on y: reduce E ::= | reduce F ::= | reduce G ::="), lines[0])
+    t |> success(ends_with(lines[1], " on q: reduce H ::= | reduce K ::="), lines[1])
+    t |> success(ends_with(tb.first_conflict, " on y: reduce F ::="), tb.first_conflict)
+}
+
+// ===== byte classes over the core =====
+
+[test(description = "byte classes are the core's terminals: a one-byte class is named by its byte, quoted only when printable (DEL is not), the end of input is the column after the last class, and a byte set spanning several classes is one set rule with a production per class, reused by a second use of the same set")]
+def test_lr1_classes_as_terminals(t : T?) {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    add_production(gb, s, [sym_bytes(range_set('a', 'c')), sym_byte('x')])
+    add_production(gb, s, [sym_byte('b'), sym_byte('y')])
+    add_production(gb, s, [sym_bytes(range_set('a', 'c')), sym_byte(',')])
+    add_production(gb, s, [sym_byte('\''), sym_byte(' ')])
+    let g <- build_grammar(gb, s)
+    t |> equal(g.err, "")
+    t |> equal(g.nclasses, 8)
+    t |> equal(g.nterms, g.nclasses + 1)
+    t |> equal(g.eof, g.nclasses)
+    t |> equal(g.byte_class['a'], g.byte_class['c'])
+    t |> equal(g.term_names[g.byte_class[',']], "','")
+    t |> equal(g.term_names[g.byte_class['a']], "class {g.byte_class['a']}")
+    t |> equal(g.term_names[g.byte_class['\'']], "byte 39")
+    t |> equal(g.term_names[g.byte_class[' ']], "byte 32")
+    t |> equal(g.term_names[g.eof], "<end>")
+    let sets <- [for (n in g.rule_names); n; where starts_with(n, "<set")]
+    t |> equal(length(sets), 1)
+    var set_prods = 0
+    for (p in g.prods) {
+        set_prods += g.rule_names[p.lhs] == sets[0] ? 1 : 0
+    }
+    t |> equal(set_prods, 2)
+    for (w in ["ax", "bx", "cx", "by", "a,", "c,", "' "]) {
+        t |> success(lr_matches(g, w), w)
+    }
+    for (w in ["ay", "cy", "b", "xb", "'"]) {
+        t |> success(!lr_matches(g, w), w)
+    }
+    var gd : GrammarBuilder
+    add_production(gd, rule_id(gd, "s"), [sym_byte(127), sym_byte('~')])
+    let del <- build_grammar(gd, 0)
+    t |> equal(del.term_names[del.byte_class[127]], "byte 127", "DEL is no printable quote")
+    t |> equal(del.term_names[del.byte_class['~']], "'~'")
+}
+
+[test(description = "a set rule never merges with a user rule of the same name: with a user rule named `<set2>` the set `[ab]` keeps its own two productions, so `[ab] <set2>` accepts `aa` and `ba` only, with no conflict")]
+def test_lr1_set_rule_name_clash(t : T?) {
+    var gb : GrammarBuilder
+    let root = rule_id(gb, "root")
+    let user_set = rule_id(gb, "<set2>")
+    add_production(gb, root, [sym_bytes(range_set('a', 'b')), sym_rule(user_set)])
+    add_production(gb, user_set, [sym_byte('a')])
+    let g <- build_grammar(gb, root)
+    t |> equal(g.err, "")
+    t |> equal(g.conflicts, 0)
+    for (w in ["aa", "ba"]) {
+        t |> success(lr_matches(g, w), w)
+    }
+    for (w in ["ab", "bb"]) {
+        t |> success(!lr_matches(g, w), w)
+    }
+}
+
+[test(description = "an empty byte set is a set rule with no production and fails the build naming the rule that uses it, and a root that is no rule of the builder - out of range, or the id a set rule takes - fails it without tables")]
+def test_lr1_byte_errors(t : T?) {
+    let empty_set : ByteSet
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    add_production(gb, s, [sym_byte('a'), sym_bytes(empty_set)])
+    let g <- build_grammar(gb, s)
+    t |> equal(g.err, "rule 's' derives no terminal string")
+    t |> success(!lr_matches(g, "a"))
+    let g2 <- build_grammar(gb, 7)
+    t |> equal(g2.err, "root rule 7 is not a declared rule")
+    var st <- lr_start(g2)
+    t |> success(!lr_step(g2, st, uint8('a')) && !lr_at_end(g2, st) &&
+                 !lr_accepts(g2, st, uint8('a')))
+    var gs : GrammarBuilder
+    let s1 = rule_id(gs, "s")
+    add_production(gs, s1, [sym_bytes(range_set('a', 'b'))])
+    add_production(gs, s1, [sym_byte('a')])
+    let g3 <- build_grammar(gs, 1)
+    t |> equal(g3.err, "root rule 1 is not a declared rule", "the set rule `[ab]` makes is no root")
+    t |> equal(g3.nstates, 0)
+    t |> success(!lr_matches(g3, "a") && !lr_matches(g3, "b"))
+    let g4 <- build_grammar(gs, s1)
+    t |> equal(g4.err, "")
+    t |> success(lr_matches(g4, "a") && lr_matches(g4, "b") && !lr_matches(g4, "c"))
+}
+
 [test(description = "a 4096-byte literal followed by a rule builds a shift into that rule: the item past the 4096th byte keys apart from the next production's first item")]
 def test_lr1_long_production(t : T?) {
     var gb : GrammarBuilder
@@ -239,12 +668,10 @@ def test_lr1_long_production(t : T?) {
     let g <- build_grammar(gb, s)
     t |> equal(g.err, "")
     t |> equal(g.conflicts, 0)
-    let width = g.nclasses + 1
     let col = g.byte_class['b']
     let shifts_b <- [for (si in range(g.nstates)); si;
-                     where g.action[si * width + col] > 0 && g.action[si * width + col] != ACCEPT]
+                     where is_shift(g.action[si * g.nterms + col])]
     t |> equal(length(shifts_b), 1, "the state after 4096 a's shifts b")
-    let nrules = length(g.rule_names)
-    let gotos_b <- [for (si in range(g.nstates)); si; where g.goto_nt[si * nrules + b] >= 0]
+    let gotos_b <- [for (si in range(g.nstates)); si; where g.goto_nt[si * g.nrules + b] >= 0]
     t |> equal(gotos_b, shifts_b, "... and goes to b's state from the same state")
 }

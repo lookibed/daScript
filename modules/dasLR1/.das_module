@@ -3,7 +3,7 @@ require daslib/fio
 
 [export]
 def initialize(project_path : string) {
-    for (path in ["lr1", "gbnf", "json_schema"]) {
+    for (path in ["lr1", "lr1_lalr", "gbnf", "json_schema"]) {
         register_native_path("lr1", "{path}", "{project_path}/lr1/{path}.das")
     }
 }
