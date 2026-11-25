@@ -8,8 +8,8 @@ or a builtin module the daslang executable registers itself (such as `strings` o
 the module is reused by programs that load nothing under `modules/`; a caller-specific need is met at the
 caller.
 
-**A diff that lets `build_grammar` return a `Grammar` with an empty `err` for a grammar in which a rule the
-root reaches derives no terminal string is a defect** - the acceptor would then accept a byte after which
+**A diff that lets `build_lalr` or `build_grammar` return tables with an empty `err` for a grammar in which
+a rule the root reaches derives no terminal string is a defect** - the acceptor would then accept a byte after which
 no sentence can be completed (`ARCHITECTURE.md#viable-prefix`).
 
 **A diff that resolves a table cell more than one action claims by keeping one action and dropping the

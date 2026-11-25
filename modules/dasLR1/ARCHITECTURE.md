@@ -1,16 +1,22 @@
 # dasLR1 architecture
 
 This document follows the repository's `ARCHITECTURE_COMMON.md` contract. dasLR1 is a pure daslang
-module: an LALR(1) parser generator over byte terminals built at run time, an incremental acceptor
-over its tables, a reader for GBNF grammar text, and a JSON-schema compiler that emits GBNF. Its one
-consumer in this tree is the token constraint of `utils/dasllama-server`, and it depends on nothing
-under `modules/`.
+module: an LALR(1) table builder over integer terminals, a byte front end that builds over it at run
+time, an incremental acceptor over the byte tables, a reader for GBNF grammar text, and a JSON-schema
+compiler that emits GBNF. Its one consumer in this tree is the token constraint of
+`utils/dasllama-server`, and it depends on nothing under `modules/`.
 
 ## File charters
 
-- `lr1/lr1.das` - the grammar data (`GrammarBuilder`, `Grammar`), the LALR(1) table builder and the
-  acceptor (`LrStack`, `lr_start`, `lr_step`, `lr_accepts`, `lr_at_end`, `lr_next_bytes`,
-  `lr_step_bytes`, `lr_matches`). Knows nothing of grammar text or schemas.
+- `lr1/lr1_lalr.das` (module `lr1_lalr`) - the LALR(1) core over integer terminals: the builder
+  (`LalrBuilder`, `rule_id`, `fresh_rule`, `term_id`, `declare_terms`, `add_production`, `term_sym`,
+  `rule_sym`), the tables (`LalrTables`, `build_lalr`, `build_lalr_into`, `ACCEPT`) and their
+  descriptions (`describe_prod`, `describe_action`, `describe_conflicts`). Knows nothing of bytes, and
+  runs no parse.
+- `lr1/lr1.das` - the byte front end (`GrammarBuilder`, `ByteSet`, `sym_byte`, `sym_bytes`,
+  `sym_rule`, `build_grammar`, `Grammar`) and the acceptor (`LrStack`, `lr_start`, `lr_step`,
+  `lr_accepts`, `lr_at_end`, `lr_next_bytes`, `lr_step_bytes`, `lr_matches`). Knows nothing of grammar
+  text or schemas.
 - `lr1/gbnf.das` - GBNF text to a `Grammar` (`gbnf_grammar`), the repetition cap `GBNF_REPEAT_CAP`
   and the hex-digit reader `hex_digit_value`. Owns the dialect: literals, classes, repetition
   suffixes, groups, comments, rule continuation. Never a parser of anything but grammar text.
@@ -19,21 +25,55 @@ under `modules/`.
 - `tests/` - the module's tests, the lifted corpora they run (`_gbnf_corpus.json`,
   `_schema_corpus.json`, `_gbnf/*.gbnf`) and the program that lifts them (`_lift_corpora.das`).
 
+## Integer terminals
+
+The core's terminals are ids `0 .. n-1` a program declares, by name (`term_id`) or by count
+(`declare_terms`, which extends the declared ones to a count and names the new ones `#<id>`); the end of
+input is id `n`, named `<end>`, the last action column. A production's right-hand side holds terminal
+ids as they are and rule `r` as `-(1 + r)`. `build_lalr` refuses, through `err`, a root that is not a
+rule and a production naming an undeclared terminal or rule, so a front end's mistake is a message, not
+an out-of-range read. The core knows no alphabet, so any front end - bytes here, tokens elsewhere -
+builds through it.
+
 ## Byte classes as terminals
 
-A terminal is a byte class, not a byte. The builder partitions the 256 byte values into the finest
-classes the grammar's byte sets agree on, so two bytes no production tells apart share one class and one
-action column. A JSON grammar needs about forty classes where it would need 256 byte columns, and the
-action table (`action[state * (nclasses + 1) + cls]`, the end-of-input column last) stays small enough to
-build per request. `byte_class` maps a byte to its class at step time. Item keys are 64-bit: a
-production index times 4096 plus the dot, times 1024 plus the lookahead, which a grammar of a thousand
-rules puts past 32 bits.
+The byte front end's terminal is a byte class, not a byte. `build_grammar` partitions the 256 byte
+values into the finest classes the grammar's byte sets agree on, so two bytes no production tells apart
+share one class and one action column, and declares class `c` as core terminal `c`, named by its byte
+when it holds one. A byte set that spans several classes becomes a rule `<setN>` with one production per
+class, one rule per distinct set, declared by `fresh_rule` rather than interned by name, so a program
+rule that happens to be named `<setN>` stays a rule of its own. `build_grammar` checks its root against
+the builder's own rules before it adds the set rules, so a set rule is never a root. A JSON grammar
+needs about forty classes where it would need 256 byte columns, and the action table (`action[state *
+(nclasses + 1) + cls]`, the end-of-input column `nclasses` last) stays small enough to build per
+request. `byte_class` maps a byte to its class at step time. `Grammar` extends `LalrTables` with
+`byte_class` and `nclasses`, and `build_grammar` builds into it (`build_lalr_into`): the tables keep the
+core's field names, and the acceptor reads them with no copy.
+
+## Item keys {#item-key}
+
+An LR(0) item (production, dot) gets a dense id: `item_base[p] + dot`, where `item_base` sums
+`length(rhs) + 1` over the productions before `p`. An LR(1) key is `int64(item) * (nterms + 1) +
+lookahead`, with lookaheads `0 .. nterms` (`nterms` itself is the propagation marker `#`). The multiplier
+is the real alphabet width, so no field has a fixed width: with any item count that fits in `int` and
+any terminal count, the key stays below 2^62. A packing with fixed fields - a production times 4096 plus
+the dot, times 1024 plus the lookahead - merges two items once a production passes 4096 symbols or a
+grammar passes 1023 terminals, and a GBNF literal or a repetition reaches the first. State identity is
+the sorted list of kernel item ids.
+
+## Lookaheads and tables {#lookaheads}
+
+The tables are LALR(1): LR(0) kernels, then lookaheads by spontaneous generation and propagation (the
+dragon book's 4.7.5), each kernel item's closure taken once with the marker `#`. The table step reuses
+the same marker closure: a completed item whose lookahead is a terminal reduces on it, and one whose
+lookahead is `#` reduces on every lookahead of its kernel item. Shifts are written first, so a cell's
+first action - a shift when there is one - is the one `action` holds.
 
 ## Conflicts kept as a set of stacks {#stack-set}
 
-The tables are LALR(1): LR(0) kernels with lookaheads propagated the dragon-book way. A cell that ends
-up with more than one action is not an error. The first action stays in `action`, the others in `alt`
-keyed by the cell index, `conflicts` counts such cells and `first_conflict` names the first. The acceptor
+A cell that ends up with more than one action is not an error. The first action stays in `action`, the
+others in `alt` keyed by the cell index without duplicates, `conflicts` counts such cells,
+`first_conflict` names the first and `describe_conflicts` lists each with all its actions. The acceptor
 is then a set of LR stacks (`LrStack.stacks`): at a conflicting cell it forks, a stack that cannot act
 dies, and two stacks with the same states are one. The language accepted is exactly the grammar's, so a
 grammar author - a schema compiler, or a hand-written GBNF with adjacent optionals or repeated sets -
@@ -50,8 +90,9 @@ deterministic and never comes near it.
 
 A byte is accepted when some stack can, after its chain of reduces, shift the byte's class, and refused
 the moment no stack can. For that acceptance to mean "some sentence of the grammar extends this prefix"
-every rule the root reaches must derive some terminal string, so `build_grammar` refuses a grammar
-whose reachable rule is unproductive (`Grammar.err` names it) and ignores rules the root cannot reach.
+every rule the root reaches must derive some terminal string, so `build_lalr` refuses a grammar whose
+reachable rule is unproductive (`err` names the first, `err_rule` holds its name), `build_grammar`
+passes that verdict on, and rules the root cannot reach are ignored.
 The property is what makes the acceptor usable as a token mask: a sampler that admits a token only while
 every byte of it is accepted never has to undo an emitted prefix. `lr_at_end` reads acceptance at the
 end-of-input column the same way, through the reduce chains, so a stop token is admitted exactly where
