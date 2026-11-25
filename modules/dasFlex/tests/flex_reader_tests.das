@@ -60,9 +60,18 @@ XY      x|y
 %flex~ r_untyped
 %rules
 [0-9]+              { lx |> emit(7) }
+"="                 { let k = 10; emit(k) }
 "/"[a-z]+           { lx |> emit(8) }
 \/[/]               { lx |> emit(9) }
 .                   { }
+%%
+
+%flex~ r_escapes : RTok
+%rules
+"\n"                { emit(WORD) }
+"\""                { emit(NUM) }
+"\\"                { emit(PLUS) }
+"a\tb"              { emit(LIT) }
 %%
 
 // what the actions of `r_groups` saw, one line per token
@@ -101,7 +110,7 @@ def stream(src, which : string) : array<string> {
     var out <- lex_tokens(lx, src, $(var l : FlexLexer) {
         return (which == "kinds" ? r_kinds(l) : which == "defs" ? r_defs(l)
             : which == "groups" ? r_groups(l) : which == "braces" ? r_braces(l)
-            : which == "alt" ? r_alt(l) : r_untyped(l))
+            : which == "alt" ? r_alt(l) : which == "escapes" ? r_escapes(l) : r_untyped(l))
     }, $(var l : FlexLexer) => "{l.tok.kind}:{text(l)}")
     out |> push(lx.err)
     return <- out
@@ -117,6 +126,11 @@ def private reader_module(defs, rules : string) : string =>
 def test_header_enum(t : T?) {
     t |> equal(stream("ab 12", "kinds"), ["{int(RTok.WORD)}:ab", "{int(RTok.NUM)}:12", ""])
     t |> equal(stream("x 42 y", "untyped"), ["7:42", ""])
+}
+
+[test(description = "with no token enum in the header, a bare name in emit() is the action's own variable")]
+def test_untyped_emit_of_a_local(t : T?) {
+    t |> equal(stream("x=", "untyped"), ["10:=", ""])
 }
 
 [test(description = "%x hides the default rules, %s keeps them, <*> and <A,B> list the conditions a rule is active in")]
@@ -260,6 +274,7 @@ def test_reader_refusals(t : T?) {
         (reader_module("%option speed=fast\n", "a\n"),
          "%option takes mode=, dispatch= and matcher=, not speed=fast", 7),
         (reader_module("D  [0-9] x\n", "a\n"), "a definition is `NAME regex`, one pattern", 7),
+        (reader_module("D  [ab\n", "a\n"), "a [set] ends at the end of the line", 7),
         (reader_module("%y C\n", "a\n"),
          "a definition is `%x NAMES`, `%s NAMES`, `%option key=value` or `NAME regex`", 7),
         ("options gen2\nrequire flex/flex_macro\n%flex~ bad\nD  [0-9]\n%%\n",
@@ -373,3 +388,80 @@ def test_duplicate_conditions(t : T?) {
     }
 }
 
+
+[test(description = "a quoted pattern reads the newline, quote and backslash escapes and a control escape inside literal text")]
+def test_quoted_escapes(t : T?) {
+    t |> equal(stream("\n\"\\a\tb", "escapes"),
+               ["{int(RTok.WORD)}:\n", "{int(RTok.NUM)}:\"", "{int(RTok.PLUS)}:\\",
+                "{int(RTok.LIT)}:a\tb", ""])
+}
+
+[test(description = "%option mode, dispatch and matcher reach the [flex_text] annotation the reader writes")]
+def test_option_reaches_annotation(t : T?) {
+    let text = " lex : E\n%option mode=goto dispatch=tree matcher=call\n%rules\na\n"
+    let out = flex_reader_source(text)
+    t |> equal(out.err, "")
+    let head = split(out.source, "\n")[0]
+    t |> success(find(head, "mode = \"goto\", dispatch = \"tree\", matcher = \"call\")]") >= 0,
+                 head)
+}
+
+[test(description = "a comment after a braced action and a comment line among the definitions are skipped, not read as text")]
+def test_comments(t : T?) {
+    let text = " lex : E\n// the definitions\n%rules\na  \{ emit(A) \} // a comment\n"
+    let out = flex_reader_source(text)
+    t |> equal(out.err, "")
+    t |> equal(split(out.source, "\n")[3], "rule(\"a\", \"\") \{ emit(A) \}")
+}
+
+[test(description = "the reader text ends at the first %%, even one right after an action, and the module goes on after it")]
+def test_inline_terminator(t : T?) {
+    let src = ("options gen2\nrequire flex/flex_macro\nenum E \{\n    A = 1\n\}\n"
+        + "%flex~ lex : E\n%rules\na  \{ emit(A) \}%%\n"
+        + "def after(var lx : FlexLexer) : bool => lex(lx)\n")
+    t |> equal(compile_issues("inline_end.das", src), "")
+}
+
+[test(description = "two unknown start conditions in one action report the first, at its line")]
+def test_first_unknown_begin(t : T?) {
+    let body = ("    rule(\"a\") \{\n        lx |> begin(\"X\")\n"
+        + "        lx |> begin(\"Y\")\n    \}\n")
+    let issues = compile_issues("b1.das", flex_module(body))
+    t |> success(find(issues, "begin(\"X\"): no such start condition") >= 0, issues)
+    t |> success(find(issues, "b1.das:6:") >= 0, issues)
+    t |> success(find(issues, "\"Y\"") < 0, issues)
+}
+
+[test(description = "a group call in a rule whose regex does not parse reports the regex, not the groups")]
+def test_group_call_on_unparsed_regex(t : T?) {
+    let body = "    rule(\"(\") \{\n        print(lx |> group(1))\n    \}\n"
+    let issues = compile_issues("u1.das", flex_module(body))
+    t |> success(find(issues, "regex '(' does not parse") >= 0, issues)
+    t |> success(find(issues, "asks for") < 0, issues)
+}
+
+[test(description = "a [flex_text] body holds only rule(regex, conditions) calls with a block: any other call or shape fails the compile")]
+def test_flex_text_rule_shape(t : T?) {
+    let head = ("options gen2\nrequire flex/flex_macro\n"
+        + "[flex_text(tokens = \"\", conditions = \"\")]\ndef bad(var lx : FlexLexer) : bool \{\n")
+    let bodies <- ["    rule(\"a\") \{\n    \}\n", "    rule(\"a\", \"\")\n", "    print(\"a\")\n"]
+    let want = "rule(\"regex\", \"conditions\") \{ ... \} expected"
+    for (i, body in count(), bodies) {
+        let issues = compile_issues("ft{i}.das", head + body + "\}\n")
+        t |> success(find(issues, want) >= 0, issues)
+        t |> success(find(issues, "ft{i}.das:5:") >= 0, issues)
+    }
+}
+
+[test(description = "a module global already holding the name of a scanner's table or group regex fails the compile naming it")]
+def test_global_name_collisions(t : T?) {
+    let cases <- [("lex`flex`start", "    rule(\"a\") \{\n        lx |> emit(1)\n    \}\n"),
+                  ("lex`flex`re`0",
+                   "    rule(\"(a)\") \{\n        print(lx |> group(1))\n    \}\n")]
+    for (i, c in count(), cases) {
+        let src = ("options gen2\nrequire flex/flex_macro\nvar {c._0} : int\n[flex]\n"
+            + "def lex(var lx : FlexLexer) : bool \{\n{c._1}\}\n")
+        let issues = compile_issues("gc{i}.das", src)
+        t |> success(find(issues, "can't add the global {c._0}") >= 0, issues)
+    }
+}
