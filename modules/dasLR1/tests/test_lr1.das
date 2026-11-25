@@ -226,3 +226,25 @@ def test_lr1_byte_classes(t : T?) {
         t |> success(!lr_matches(g, "7a") && !lr_matches(g, "g7"), "a letter second, or outside the set, is refused")
     }
 }
+
+[test(description = "a 4096-byte literal followed by a rule builds a shift into that rule: the item past the 4096th byte keys apart from the next production's first item")]
+def test_lr1_long_production(t : T?) {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    let b = rule_id(gb, "b")
+    var rhs <- [for (_ in range(4096)); sym_byte('a')]
+    rhs |> push(sym_rule(b))
+    add_production(gb, s, rhs)
+    add_production(gb, b, [sym_byte('b')])
+    let g <- build_grammar(gb, s)
+    t |> equal(g.err, "")
+    t |> equal(g.conflicts, 0)
+    let width = g.nclasses + 1
+    let col = g.byte_class['b']
+    let shifts_b <- [for (si in range(g.nstates)); si;
+                     where g.action[si * width + col] > 0 && g.action[si * width + col] != ACCEPT]
+    t |> equal(length(shifts_b), 1, "the state after 4096 a's shifts b")
+    let nrules = length(g.rule_names)
+    let gotos_b <- [for (si in range(g.nstates)); si; where g.goto_nt[si * nrules + b] >= 0]
+    t |> equal(gotos_b, shifts_b, "... and goes to b's state from the same state")
+}

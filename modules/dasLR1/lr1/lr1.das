@@ -164,8 +164,6 @@ struct private Item {
     dot : int
 }
 
-def private item_key(it : Item) : int64 => int64(it.prod) * 4096l + int64(it.dot)   // 64-bit: a grammar past 500k productions still keys apart
-
 struct private LrState {
     kernel : array<Item>
     la : array<table<int>>          //!< per kernel item: lookahead terminal classes (EOF = nclasses)
@@ -176,12 +174,19 @@ struct private Builder {
     prods : array<Production>
     nrules : int
     nclasses : int
+    item_base : array<int>          //!< per production: the dense id of its dot-0 item
     nullable : array<bool>
     first : array<table<int>>       //!< per rule: terminal classes that can start it
     by_lhs : array<array<int>>      //!< per rule: its productions
     states : array<LrState>
     state_index : table<string; int>
 }
+
+//! the dense id of an item, one per (production, dot) pair
+def private item_id(b : Builder; it : Item) : int => b.item_base[it.prod] + it.dot
+
+def private item_la_key(b : Builder; it : Item; la : int) : int64 =>
+    int64(item_id(b, it)) * int64(b.nclasses + 1 - HASH_LA) + int64(la - HASH_LA)
 
 def private sym_is_rule(s : int) : bool => s < 0
 def private sym_rule_of(s : int) : int => -1 - s
@@ -246,9 +251,9 @@ def private first_of_tail(b : Builder; syms : array<int>; from : int; la : int; 
 // LR(0) closure of a kernel: the kernel items plus every `B -> .gamma` for a rule B after a dot
 def private closure0(b : Builder; kernel : array<Item>) : array<Item> {
     var items := kernel
-    var seen : table<int64>
+    var seen : table<int>
     for (it in items) {
-        seen |> insert(item_key(it))
+        seen |> insert(item_id(b, it))
     }
     var i = 0
     while (i < length(items)) {
@@ -257,8 +262,8 @@ def private closure0(b : Builder; kernel : array<Item>) : array<Item> {
         if (it.dot < length(p.rhs) && sym_is_rule(p.rhs[it.dot])) {
             for (q in b.by_lhs[sym_rule_of(p.rhs[it.dot])]) {
                 let ni = Item(prod = q, dot = 0)
-                if (!(seen |> key_exists(item_key(ni)))) {
-                    seen |> insert(item_key(ni))
+                if (!(seen |> key_exists(item_id(b, ni)))) {
+                    seen |> insert(item_id(b, ni))
                     items |> push(ni)
                 }
             }
@@ -268,11 +273,11 @@ def private closure0(b : Builder; kernel : array<Item>) : array<Item> {
     return <- items
 }
 
-def private kernel_key(kernel : array<Item>) : string {
-    var keys : array<int64>
+def private kernel_key(b : Builder; kernel : array<Item>) : string {
+    var keys : array<int>
     keys |> reserve(length(kernel))
     for (it in kernel) {
-        keys |> push(item_key(it))
+        keys |> push(item_id(b, it))
     }
     sort(keys)
     return join(keys, ",")
@@ -291,7 +296,7 @@ def private goto_kernel(b : Builder; closure : array<Item>; sym : int) : array<I
 }
 
 def private state_of(var b : Builder; var kernel : array<Item>) : int {
-    let key = kernel_key(kernel)
+    let key = kernel_key(b, kernel)
     if (b.state_index |> key_exists(key)) {
         return b.state_index[key]
     }
@@ -356,7 +361,7 @@ def private closure1(b : Builder; it0 : Item; la0 : int) : array<tuple<it : Item
     var items : array<tuple<it : Item; la : int>>
     var seen : table<int64>
     items |> push((it = it0, la = la0))
-    seen |> insert(item_key(it0) * 1024l + int64(la0 + 1))
+    seen |> insert(item_la_key(b, it0, la0))
     var i = 0
     while (i < length(items)) {
         let cur = items[i]
@@ -366,7 +371,7 @@ def private closure1(b : Builder; it0 : Item; la0 : int) : array<tuple<it : Item
             first_of_tail(b, p.rhs, cur.it.dot + 1, cur.la, las)
             for (q in b.by_lhs[sym_rule_of(p.rhs[cur.it.dot])]) {
                 for (la in keys(las)) {
-                    let key = item_key(Item(prod = q, dot = 0)) * 1024l + int64(la + 1)
+                    let key = item_la_key(b, Item(prod = q, dot = 0), la)
                     if (!(seen |> key_exists(key))) {
                         seen |> insert(key)
                         items |> push((it = Item(prod = q, dot = 0), la = la))
@@ -592,8 +597,12 @@ def build_grammar(var gb : GrammarBuilder; root : int) : Grammar {
     }
     b.nrules = length(g.rule_names)
     b.by_lhs |> resize(b.nrules)
+    b.item_base |> reserve(length(b.prods))
+    var next_item = 0
     for (i, p in count(), b.prods) {
         b.by_lhs[p.lhs] |> push(i)
+        b.item_base |> push(next_item)
+        next_item += length(p.rhs) + 1
     }
     check_well_formed(b, g)
     if (!empty(g.err)) {

@@ -25,9 +25,10 @@ A terminal is a byte class, not a byte. The builder partitions the 256 byte valu
 classes the grammar's byte sets agree on, so two bytes no production tells apart share one class and one
 action column. A JSON grammar needs about forty classes where it would need 256 byte columns, and the
 action table (`action[state * (nclasses + 1) + cls]`, the end-of-input column last) stays small enough to
-build per request. `byte_class` maps a byte to its class at step time. Item keys are 64-bit: a
-production index times 4096 plus the dot, times 1024 plus the lookahead, which a grammar of a thousand
-rules puts past 32 bits.
+build per request. `byte_class` maps a byte to its class at step time. An item has a dense id, its
+production's base plus the dot, so no production length bounds the dot; an LR(1) key is that id times
+the lookahead range (the classes, the end of input and the propagation marker) plus the lookahead, 64-bit
+because a large grammar's product passes 32 bits.
 
 ## Conflicts kept as a set of stacks {#stack-set}
 
