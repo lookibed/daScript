@@ -40,13 +40,11 @@ def private fail(var s : RScan; msg : string) {
 
 def private peek(s : RScan; k : int = 0) : int => s.pos + k < length(s.d) ? int(s.d[s.pos + k]) : -1
 
-def private is_blank(c : int) : bool => c == ' ' || c == '\t'
-
 def private is_ident(c : int; first : bool) : bool =>
     c == '_' || (first ? is_alpha(c) : is_alnum(c))
 
 def private skip_blanks(var s : RScan) {
-    while (is_blank(peek(s))) {
+    while (is_tab_or_space(peek(s))) {
         s.pos++
     }
 }
@@ -138,7 +136,7 @@ def private pattern(var s : RScan; defs : table<string; string>) : string {
         var in_set = false
         while (empty(s.err)) {
             let c = peek(s)
-            break if (c < 0 || c == '\n' || (!in_set && is_blank(c)))
+            break if (c < 0 || c == '\n' || (!in_set && is_tab_or_space(c)))
             if (c == '\\') {
                 w |> write_char(c)
                 s.pos++
