@@ -54,3 +54,7 @@ defect** - both forms of a grammar must give the same tables, values and errors
 text it came from, or makes the reader's text end anywhere but at the first `%%`, is a defect** -
 the output holds the text's lines, the closing `}` on the `%%` line, and diagnostics land on the
 wrong line otherwise (`ARCHITECTURE.md#reader`).
+
+**Weakening the censuses in `REVIEW.das` - every `bison/*.das` registered in `.das_module` and every
+name registered there on disk, every test file in `tests/` named by a `das_lane_dastest_target` in
+`CMakeLists.txt` - is a defect.**

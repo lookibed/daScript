@@ -73,6 +73,11 @@ file(GLOB DASFLEX_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/dasFlex/*.das
 )
 
+# dasBison tutorial .das files for the dry_run_tutorials sweep
+file(GLOB DASBISON_TUTORIAL_SOURCES
+    ${PROJECT_SOURCE_DIR}/tutorials/dasBison/*.das
+)
+
 # Install daStrudel tutorial .das files
 file(GLOB DASTRUDEL_TUTORIAL_SOURCES
     ${PROJECT_SOURCE_DIR}/tutorials/daStrudel/*.das
@@ -140,6 +145,7 @@ SET(ALL_TUTORIAL_SOURCES
     ${MACRO_TUTORIAL_SOURCES}
     ${DASPEG_TUTORIAL_SOURCES}
     ${DASFLEX_TUTORIAL_SOURCES}
+    ${DASBISON_TUTORIAL_SOURCES}
     ${DASTRUDEL_TUTORIAL_SOURCES}
     ${JSONRPC_TUTORIAL_SOURCES}
 )
