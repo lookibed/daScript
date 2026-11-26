@@ -86,6 +86,29 @@ right-recursive rule with two spellings of the same byte - hits it after a few b
 rule that derives the empty string through a cycle of itself. A grammar the schema compiler emits is
 deterministic and never comes near it.
 
+## Stacks as shared frames {#shared-frames}
+
+A stack is its top frame (`LrFrame`: the state, the depth, the frame below), and a frame never changes
+once made. A shift or a reduce's goto makes one frame over the frame it lands on, a reduce pops by
+following `below`, so a byte costs its reduce chain whatever the stack's depth, and stacks forked at a
+conflict share every frame under the fork. A stack copied per byte would cost its depth per byte, which is
+quadratic over a sentence that nests or recurses to the right, as a constrained decoder's output does.
+Within a step each stack is resolved once: stacks are chained by a slot hashed from depth and top state,
+and a new stack is walked down beside each one on its chain until they meet at a shared frame or differ,
+so stacks that hold the same states are one whether or not they share frames. A chain can mix depths
+where two keys hash to one slot, and `same_stack` refuses those by depth before walking. The stacks
+resolved are distinct and so are each one's actions, so no two stacks a step produces hold the same
+states and the step needs no second pass. `LrStack.stacks` holds the tops and is `@do_not_delete`: frames
+are shared between sets and between probes, so no set owns one. A step allocates the frames it makes and
+nothing else: the walk's slots, chains, work list and produced tops live in one module-level scratch, and
+`lr_step` and `lr_step_bytes` copy the tops into the buffers the stack set and the module's probe copy
+already hold. The slots are never cleared: each carries the stamp of the step that last wrote it, a step
+counts as its own only the slots stamped with its number, and starting a step is one increment. A
+cleared table would cost its capacity per step, and the capacity is set by the largest step the process
+ever made - one end-of-input check down a deep right-recursive stack walks a chain per frame - so every
+later step would pay for it. The slots double, rechaining that step's stacks, when the stacks a step has
+resolved reach half of them.
+
 ## The viable-prefix property {#viable-prefix}
 
 A byte is accepted when some stack can, after its chain of reduces, shift the byte's class, and refused
@@ -96,14 +119,15 @@ passes that verdict on, and rules the root cannot reach are ignored.
 The property is what makes the acceptor usable as a token mask: a sampler that admits a token only while
 every byte of it is accepted never has to undo an emitted prefix. `lr_at_end` reads acceptance at the
 end-of-input column the same way, through the reduce chains, so a stop token is admitted exactly where
-the sentence is complete; `lr_accepts` and `lr_next_bytes` answer for a byte, or for all 256, over the
+the sentence is complete; that column holds no shift, so every top the end-of-input step produces is
+`ACCEPT`, and the check of each top's state confirms what the step already decided; `lr_accepts` and `lr_next_bytes` answer for a byte, or for all 256, over the
 same chains without moving the set.
 
 ## Probing on a copy
 
 `lr_step` moves the stack set; a probe for "may these bytes come next" copies `LrStack.stacks` and
 steps the copy (`lr_step_bytes` on the copy, as the server's token constraint does). The copy is the
-whole state - the tables are read-only - so a probe costs the stacks' depth and nothing else, and the
+whole state - the tables are read-only, the frames shared and never written - so a probe costs one pointer per stack and the bytes it steps, and the
 sampler can probe a thousand candidates against one state.
 
 ## GBNF, the dialect read

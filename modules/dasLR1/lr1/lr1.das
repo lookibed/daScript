@@ -42,10 +42,24 @@ struct Grammar : LalrTables {
     nclasses : int
 }
 
-//! The acceptor's state: the set of live LR stacks - one for a deterministic grammar, several while an
-//! ambiguous grammar's alternatives are all still open. A copy for a probe clones the set.
+//! One frame of an LR stack: its state, its depth (the bottom frame
+//! is 1) and the frame below it. A frame never changes once made, so
+//! stacks share frames: a push makes one frame over the old top, a
+//! pop follows `below`, and a stack forked at a conflict shares
+//! everything under the fork.
+struct LrFrame {
+    state : int
+    depth : int
+    below : LrFrame const?
+}
+
+//! The acceptor's state: the top frame of each live LR stack - one
+//! for a deterministic grammar, several while an ambiguous grammar's
+//! alternatives are all still open. A copy for a probe clones the
+//! tops alone; the frames under them are shared, and no step writes
+//! to one.
 struct LrStack {
-    stacks : array<array<int>>
+    @do_not_delete stacks : array<LrFrame const?>
 }
 
 //! The most stacks the acceptor keeps alive; past it the acceptor refuses, so a pathological grammar
@@ -223,9 +237,7 @@ def build_grammar(gb : GrammarBuilder; root : int) : Grammar {
 [unused_argument(g)]
 def lr_start(g : Grammar) : LrStack {
     var st : LrStack
-    var one : array<int>
-    one |> push(0)
-    st.stacks |> emplace(one)
+    st.stacks |> push(new LrFrame(state = 0, depth = 1))
     return <- st
 }
 
@@ -244,94 +256,151 @@ def private actions_at(g : Grammar; state, cls : int; var out : array<int>) {
     }
 }
 
-def private stack_key(st : array<int>) : string => join(st, ",")
+// whether two stacks hold the same states: the walk down stops where
+// they share a frame
+def private same_stack(a, b : LrFrame const?) : bool {
+    return false if (a.depth != b.depth)
+    var x = a
+    var y = b
+    while (x != y) {
+        return false if (x.state != y.state)
+        x = x.below
+        y = y.below
+    }
+    return true
+}
 
-// follow every reduce chain of `st` on lookahead `cls`; each stack whose chain ends in a shift (or in
-// ACCEPT on the EOF column) lands in `out`, the shift target at its top for a terminal class; false when
-// the set would grow past LR_MAX_STACKS (the chains left unwalked)
-def private resolve(g : Grammar; st : array<int>; cls : int; var out : array<array<int>>; var seen : table<string>) : bool {
-    var work : array<array<int>>
-    var first := st
-    work |> emplace(first)
-    var acts : array<int>
-    while (!empty(work)) {
-        return false if (length(out) > LR_MAX_STACKS)
-        var inscope cur <- work[length(work) - 1]
-        work |> pop()
-        let key = stack_key(cur)
-        continue if (seen |> key_exists(key))
-        seen |> insert(key)
-        actions_at(g, cur[length(cur) - 1], cls, acts)
-        for (a in acts) {
-            if (a == ACCEPT) {
-                var done := cur
-                done |> push(ACCEPT)
-                out |> emplace(done)
-            } elif (a > 0) {
-                var shifted := cur
-                shifted |> push(a - 1)
-                out |> emplace(shifted)
+// one step's walk: the stacks it has resolved, each once - chained
+// by a slot hashed from depth and top state, compared in full only
+// along a chain - the stacks still to resolve, and the tops the step
+// produces; a slot belongs to this step only when its stamp is the
+// step's
+struct private StepWalk {
+    slot_head : array<int>
+    slot_stamp : array<int64>
+    step : int64
+    @do_not_delete tops : array<LrFrame const?>
+    next_in_slot : array<int>
+    @do_not_delete work : array<LrFrame const?>
+    acts : array<int>
+    @do_not_delete out : array<LrFrame const?>
+}
+
+// every step walks in this one scratch, and every probe steps this
+// one copy
+var private step_walk : StepWalk
+var private probe_copy : LrStack
+
+[inline]
+def private slot_of(walk : StepWalk; top : LrFrame const?) : int {
+    let h = uint(top.depth) * 0x9E3779B1u ^ uint(top.state) * 0x85EBCA77u
+    return int((h ^ (h >> 15u)) & uint(length(walk.slot_head) - 1))
+}
+
+// the slots doubled, the step's resolved stacks chained into them
+// anew
+def private grow_slots(var walk : StepWalk) {
+    let n = empty(walk.slot_head) ? 64 : length(walk.slot_head) * 2
+    walk.slot_head |> resize(n)
+    walk.slot_stamp |> clear()
+    walk.slot_stamp |> resize(n)
+    for (i, top in count(), walk.tops) {
+        let slot = slot_of(walk, top)
+        walk.next_in_slot[i] = walk.slot_stamp[slot] == walk.step ? walk.slot_head[slot] : -1
+        walk.slot_head[slot] = i
+        walk.slot_stamp[slot] = walk.step
+    }
+}
+
+// false when a stack with the same states as `top` was resolved
+// already, else `top` joins the resolved
+[arch(at="../ARCHITECTURE.md#shared-frames")]
+def private first_visit(var walk : StepWalk; top : LrFrame const?) : bool {
+    if (length(walk.tops) * 2 >= length(walk.slot_head)) {
+        grow_slots(walk)
+    }
+    let slot = slot_of(walk, top)
+    let head = walk.slot_stamp[slot] == walk.step ? walk.slot_head[slot] : -1
+    var i = head
+    while (i >= 0) {
+        return false if (same_stack(walk.tops[i], top))
+        i = walk.next_in_slot[i]
+    }
+    walk.slot_head[slot] = length(walk.tops)
+    walk.slot_stamp[slot] = walk.step
+    walk.tops |> push(top)
+    walk.next_in_slot |> push(head)
+    return true
+}
+
+// follow every reduce chain of `top` on lookahead `cls`; each stack
+// whose chain ends in a shift (or in ACCEPT on the EOF column) lands
+// in `walk.out`, the shift target as its new top for a terminal
+// class; false when the set would grow past LR_MAX_STACKS (the chains
+// left unwalked)
+[arch(at="../ARCHITECTURE.md#shared-frames")]
+def private resolve(g : Grammar; top : LrFrame const?; cls : int; var walk : StepWalk) : bool {
+    walk.work |> push(top)
+    while (!empty(walk.work)) {
+        return false if (length(walk.out) > LR_MAX_STACKS)
+        let cur = walk.work[length(walk.work) - 1]
+        walk.work |> pop()
+        continue if (!first_visit(walk, cur))
+        actions_at(g, cur.state, cls, walk.acts)
+        for (a in walk.acts) {
+            if (a == ACCEPT || a > 0) {
+                let shifted = a == ACCEPT ? ACCEPT : a - 1
+                walk.out |> push(new LrFrame(state = shifted, depth = cur.depth + 1, below = cur))
             } else {
                 let p & = unsafe(g.prods[-1 - a])
-                var reduced := cur
-                reduced |> resize(length(reduced) - length(p.rhs))
-                let to = g.goto_nt[reduced[length(reduced) - 1] * g.nrules + p.lhs]
+                var under = cur
+                for (_ in range(length(p.rhs))) {
+                    under = under.below
+                }
+                let to = g.goto_nt[under.state * g.nrules + p.lhs]
                 if (to >= 0) {
-                    reduced |> push(to)
-                    work |> emplace(reduced)
+                    let goto_frame = new LrFrame(state = to, depth = under.depth + 1, below = under)
+                    walk.work |> push(goto_frame)
                 }
             }
         }
     }
-    return length(out) <= LR_MAX_STACKS
+    return length(walk.out) <= LR_MAX_STACKS
 }
 
-// the stack set after consuming terminal class `cls`; empty when the class is refused - by the grammar, or
-// because the set would grow past LR_MAX_STACKS
-def private advance(g : Grammar; st : LrStack; cls : int) : LrStack {
-    var next : LrStack
-    next.stacks |> reserve(length(st.stacks))
-    var seen : table<string>
-    for (s in st.stacks) {
-        if (!resolve(g, s, cls, next.stacks, seen)) {
-            next.stacks |> clear()
-            return <- next
+// the stack set after consuming terminal class `cls`, in
+// `step_walk.out`; false and `out` empty when the class is refused -
+// by the grammar, or because the set would grow past LR_MAX_STACKS
+[arch(at="../ARCHITECTURE.md#shared-frames")]
+def private advance(g : Grammar; stacks : array<LrFrame const?>; cls : int) : bool {
+    step_walk.step++
+    step_walk.tops |> clear()
+    step_walk.next_in_slot |> clear()
+    step_walk.work |> clear()
+    step_walk.out |> clear()
+    for (s in stacks) {
+        if (!resolve(g, s, cls, step_walk)) {
+            step_walk.out |> clear()
+            return false
         }
     }
-    // dedupe the survivors
-    var uniq : table<string>
-    var kept : array<array<int>>
-    kept |> reserve(length(next.stacks))
-    for (s in next.stacks) {
-        let k = stack_key(s)
-        if (!(uniq |> key_exists(k))) {
-            uniq |> insert(k)
-            kept |> emplace(s)
-        }
-    }
-    next.stacks <- kept
-    return <- next
+    return !empty(step_walk.out)
 }
 
 //! Feed one byte: true and the state advanced, or false and the state unchanged (the byte is refused).
 def lr_step(g : Grammar; var st : LrStack; b : uint8) : bool {
-    return false if (!empty(g.err) || empty(st.stacks))
-    var next <- advance(g, st, g.byte_class[int(b)])
-    if (empty(next.stacks)) {
-        return false
+    let ok = empty(g.err) && !empty(st.stacks) && advance(g, st.stacks, g.byte_class[int(b)])
+    if (ok) {
+        st.stacks := step_walk.out
     }
-    st.stacks <- next.stacks
-    return true
+    return ok
 }
 
 //! Whether the prefix fed so far is a complete sentence (the end of input is acceptable here).
 def lr_at_end(g : Grammar; st : LrStack) : bool {
-    return false if (!empty(g.err))
-    let next <- advance(g, st, g.eof)
-    for (s in next.stacks) {
-        if (s[length(s) - 1] == ACCEPT) {
-            return true
-        }
+    return false if (!empty(g.err) || !advance(g, st.stacks, g.eof))
+    for (s in step_walk.out) {
+        return true if (s.state == ACCEPT)
     }
     return false
 }
@@ -339,22 +408,20 @@ def lr_at_end(g : Grammar; st : LrStack) : bool {
 //! Whether `b` may come next, the state untouched.
 def lr_accepts(g : Grammar; st : LrStack; b : uint8) : bool {
     return false if (!empty(g.err))
-    let next <- advance(g, st, g.byte_class[int(b)])
-    return !empty(next.stacks)
+    return advance(g, st.stacks, g.byte_class[int(b)])
 }
 
 //! The set of bytes that may come next.
 def lr_next_bytes(g : Grammar; st : LrStack) : ByteSet {
     var out : ByteSet
     return out if (!empty(g.err))
-    var by_class : table<int; bool>
+    var verdict : int[256]
     for (b in range(256)) {
         let cls = g.byte_class[b]
-        if (!(by_class |> key_exists(cls))) {
-            let next <- advance(g, st, cls)
-            by_class[cls] = !empty(next.stacks)
+        if (verdict[cls] == 0) {
+            verdict[cls] = advance(g, st.stacks, cls) ? 1 : 2
         }
-        out[b] = by_class[cls]
+        out[b] = verdict[cls] == 1
     }
     return out
 }
@@ -362,19 +429,18 @@ def lr_next_bytes(g : Grammar; st : LrStack) : ByteSet {
 //! Feed every byte of `s`: true when all were accepted (the state advanced past them), false and the
 //! state unchanged otherwise - the whole-token probe a sampler asks per candidate.
 def lr_step_bytes(g : Grammar; var st : LrStack; s : string) : bool {
-    var probe : LrStack
-    probe.stacks := st.stacks
+    probe_copy.stacks := st.stacks
     var ok = true
     peek_data(s) $(d : array<uint8> const#) {
         for (b in d) {
-            if (!lr_step(g, probe, b)) {
+            if (!lr_step(g, probe_copy, b)) {
                 ok = false
                 break
             }
         }
     }
     if (ok) {
-        st.stacks <- probe.stacks
+        st.stacks := probe_copy.stacks
     }
     return ok
 }

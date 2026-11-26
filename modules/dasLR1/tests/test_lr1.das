@@ -5,6 +5,7 @@ options no_unused_function_arguments = false
 
 require dastest/testing_boost public
 require lr1/lr1
+require math
 require strings
 require daslib/strings_boost
 
@@ -44,6 +45,31 @@ def private arith() : Grammar {
     seq(p4, [sym_rule(term), sym_bytes(digits())])
     add_production(gb, term, p4)
     return <- build_grammar(gb, expr)
+}
+
+// s ::= a s | b s | '!' ; a ::= 'x' ; b ::= 'x'  - right recursion
+// keeps every reading of every x on the stack, so k x's are 2^k live
+// stacks over shared frames
+def private forking_grammar() : Grammar {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    let a = rule_id(gb, "a")
+    let b = rule_id(gb, "b")
+    add_production(gb, s, [sym_rule(a), sym_rule(s)])
+    add_production(gb, s, [sym_rule(b), sym_rule(s)])
+    add_production(gb, s, [sym_byte('!')])
+    add_production(gb, a, [sym_byte('x')])
+    add_production(gb, b, [sym_byte('x')])
+    return <- build_grammar(gb, s)
+}
+
+//! Step `b` until it is refused or `cap` were fed; the count fed.
+def private feed_until_refused(g : Grammar; var st : LrStack; b : uint8; cap : int) : int {
+    var fed = 0
+    while (fed < cap && lr_step(g, st, b)) {
+        fed++
+    }
+    return fed
 }
 
 [test(description = "A left-recursive sum grammar accepts its sentences and refuses the rest, refuses a second operator at once by the viable prefix, reports the next-byte set, and leaves the state unmoved after a refused probe.")]
@@ -168,38 +194,15 @@ def test_lr1_verdicts(t : T?) {
     }
 }
 
-[test(description = "When the next byte would push the stack set past LR_MAX_STACKS the acceptor refuses it and keeps the set where it was, never dropping a live stack, while a sentence inside the cap completes.")]
+[test(description = "When the next byte would push the stack set past LR_MAX_STACKS the acceptor refuses it and keeps the set where it was, never dropping a live stack, while a sentence inside the cap completes - whether the set doubles per byte or grows by one.")]
 def test_lr1_stack_cap(t : T?) {
     t |> run("a grammar whose alternatives multiply past LR_MAX_STACKS has its byte refused, never a stack dropped") @(t : T?) {
-        // s ::= a s | b s | '!' ; a ::= 'x' ; b ::= 'x'  - right recursion keeps every reading of every x on the
-        // stack, so k x's are 2^k live stacks: the set passes the cap on the ninth
-        var gb : GrammarBuilder
-        let s = rule_id(gb, "s")
-        let a = rule_id(gb, "a")
-        let b = rule_id(gb, "b")
-        var via_a : array<GrammarSym>
-        seq(via_a, [sym_rule(a), sym_rule(s)])
-        add_production(gb, s, via_a)
-        var via_b : array<GrammarSym>
-        seq(via_b, [sym_rule(b), sym_rule(s)])
-        add_production(gb, s, via_b)
-        var bang : array<GrammarSym>
-        seq(bang, [sym_byte('!')])
-        add_production(gb, s, bang)
-        var xa : array<GrammarSym>
-        seq(xa, [sym_byte('x')])
-        add_production(gb, a, xa)
-        var xb : array<GrammarSym>
-        seq(xb, [sym_byte('x')])
-        add_production(gb, b, xb)
-        let g <- build_grammar(gb, s)
+        // the set passes the cap on the ninth x
+        let g <- forking_grammar()
         t |> equal(g.err, "", "the grammar builds")
         t |> success(g.conflicts > 0, "... with conflicts")
         var st <- lr_start(g)
-        var fed = 0
-        while (fed < 64 && lr_step(g, st, uint8('x'))) {
-            fed++
-        }
+        let fed = feed_until_refused(g, st, uint8('x'), 64)
         t |> success(fed > 0 && fed < 64, "the acceptor fed {fed} bytes before the set would pass the cap")
         t |> success(length(st.stacks) <= LR_MAX_STACKS, "the set never holds more than the cap ({length(st.stacks)})")
         t |> success(!lr_step(g, st, uint8('x')), "the refused byte stays refused")
@@ -207,6 +210,230 @@ def test_lr1_stack_cap(t : T?) {
         var short <- lr_start(g)
         t |> success(lr_step_bytes(g, short, "xxxxx!") && lr_at_end(g, short), "a sentence inside the cap completes")
     }
+    t |> run("a set that grows one stack a byte never passes the cap") @(t : T?) {
+        // s ::= a 'e' ; a ::= 'x' a | b ; b ::= b 'x' | <empty>
+        // after k x's, every split of them between the right-recursive
+        // a and the left-recursive b is a stack: k + 1 stacks, one more
+        // per byte
+        var gb : GrammarBuilder
+        let s = rule_id(gb, "s")
+        let a = rule_id(gb, "a")
+        let b = rule_id(gb, "b")
+        add_production(gb, s, [sym_rule(a), sym_byte('e')])
+        add_production(gb, a, [sym_byte('x'), sym_rule(a)])
+        add_production(gb, a, [sym_rule(b)])
+        add_production(gb, b, [sym_rule(b), sym_byte('x')])
+        add_production(gb, b, [])
+        let g <- build_grammar(gb, s)
+        t |> equal(g.err, "", "the grammar builds")
+        var st <- lr_start(g)
+        var fed = 0
+        var most = length(st.stacks)
+        while (fed < 600 && lr_step(g, st, uint8('x'))) {
+            fed++
+            most = max(most, length(st.stacks))
+        }
+        t |> success(fed > 0 && fed < 600, "the acceptor fed {fed} bytes, then refused one")
+        t |> success(most <= LR_MAX_STACKS, "the set never held more than the cap ({most})")
+    }
+}
+
+[test(description = "4096 bytes of a right-recursive rule keep one stack whose every step pushes one frame over the previous top - no stack is copied, so a byte costs the same at depth 4096 as at depth 1 - and the whole string matches.")]
+def test_lr1_deep_right_recursion(t : T?) {
+    // root ::= 'a' root | 'a'
+    var gb : GrammarBuilder
+    let root = rule_id(gb, "root")
+    add_production(gb, root, [sym_byte('a'), sym_rule(root)])
+    add_production(gb, root, [sym_byte('a')])
+    let g <- build_grammar(gb, root)
+    t |> equal(g.err, "")
+    var st <- lr_start(g)
+    var pushed_once = true
+    for (_ in range(4096)) {
+        let prev = st.stacks[0]
+        pushed_once = (pushed_once && lr_step(g, st, uint8('a')) && length(st.stacks) == 1
+            && st.stacks[0].below == prev && st.stacks[0].depth == prev.depth + 1)
+    }
+    t |> success(pushed_once, "each byte pushed one frame on the previous top")
+    t |> equal(st.stacks[0].depth, 4097, "the stack is 4096 frames over the start")
+    t |> success(lr_at_end(g, st), "... and the sentence is complete")
+    t |> success(lr_matches(g, repeat("a", 4096)), "lr_matches agrees")
+}
+
+// s ::= u 'y' ; u ::= a | c ; a ::= 'x' ; c ::= d ; d ::= 'x'
+def private check_chains_of_two_lengths(t : T?) {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    let u = rule_id(gb, "u")
+    let a = rule_id(gb, "a")
+    let c = rule_id(gb, "c")
+    let d = rule_id(gb, "d")
+    add_production(gb, s, [sym_rule(u), sym_byte('y')])
+    add_production(gb, u, [sym_rule(a)])
+    add_production(gb, u, [sym_rule(c)])
+    add_production(gb, a, [sym_byte('x')])
+    add_production(gb, c, [sym_rule(d)])
+    add_production(gb, d, [sym_byte('x')])
+    let g <- build_grammar(gb, s)
+    t |> success(empty(g.err) && g.conflicts > 0, "it builds, with a reduce/reduce cell")
+    var st <- lr_start(g)
+    t |> success(lr_step_bytes(g, st, "xy"), "x reduces to u in one step and in two")
+    t |> equal(length(st.stacks), 1, "... and the two land as one stack")
+    t |> equal(st.stacks[0].depth, 3, "... 'y' over u over the start, whichever chain made u")
+    t |> success(lr_at_end(g, st), "... which completes the sentence")
+}
+
+// s ::= l p t | l q t ; t ::= n 'e' ; p ::= ; q ::=
+// l ::= 'x' | 'x' 'x' ; n ::= 'x' | 'x' 'x'
+def private check_chain_past_its_head(t : T?) {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    let l = rule_id(gb, "l")
+    let p = rule_id(gb, "p")
+    let q = rule_id(gb, "q")
+    let tt = rule_id(gb, "t")
+    let n = rule_id(gb, "n")
+    add_production(gb, s, [sym_rule(l), sym_rule(p), sym_rule(tt)])
+    add_production(gb, s, [sym_rule(l), sym_rule(q), sym_rule(tt)])
+    add_production(gb, tt, [sym_rule(n), sym_byte('e')])
+    add_production(gb, l, [sym_byte('x')])
+    add_production(gb, l, [sym_byte('x'), sym_byte('x')])
+    add_production(gb, p, [])
+    add_production(gb, q, [])
+    add_production(gb, n, [sym_byte('x')])
+    add_production(gb, n, [sym_byte('x'), sym_byte('x')])
+    let g <- build_grammar(gb, s)
+    t |> equal(g.err, "", "the grammar builds")
+    var st <- lr_start(g)
+    t |> success(lr_step_bytes(g, st, "xxx"), "'xxx' splits at l, then at p or q")
+    t |> equal(length(st.stacks), 4, "... four stacks")
+    t |> success(lr_step(g, st, uint8('e')), "'e' reduces each split's n and t")
+    t |> equal(length(st.stacks), 2, "... the p readings one stack, the q readings another")
+    t |> success(lr_at_end(g, st), "... which complete the sentence")
+}
+
+// s ::= a 'e' ; a ::= 'x' a | u ; u ::= p | q ; p ::= 'z' ; q ::= 'z'
+// on 'e' one reading walks u, then a down all 16384 x's - more frames
+// than any other step in this file, so the slots grow - and only then
+// does the other reading reach u
+def private check_merge_after_slots_grow(t : T?) {
+    var gb : GrammarBuilder
+    let s = rule_id(gb, "s")
+    let a = rule_id(gb, "a")
+    let u = rule_id(gb, "u")
+    let p = rule_id(gb, "p")
+    let q = rule_id(gb, "q")
+    add_production(gb, s, [sym_rule(a), sym_byte('e')])
+    add_production(gb, a, [sym_byte('x'), sym_rule(a)])
+    add_production(gb, a, [sym_rule(u)])
+    add_production(gb, u, [sym_rule(p)])
+    add_production(gb, u, [sym_rule(q)])
+    add_production(gb, p, [sym_byte('z')])
+    add_production(gb, q, [sym_byte('z')])
+    let g <- build_grammar(gb, s)
+    t |> success(empty(g.err) && g.conflicts > 0, "it builds, with a reduce/reduce cell")
+    var st <- lr_start(g)
+    t |> success(lr_step_bytes(g, st, repeat("x", 16384) + "z"), "16384 x's, then z")
+    t |> success(lr_step(g, st, uint8('e')), "'e' reduces z as p and as q, each down to a")
+    t |> equal(length(st.stacks), 1, "... and the two readings land as one stack")
+    t |> success(lr_at_end(g, st), "... which completes the sentence")
+}
+
+[test(description = "Two readings that end in the same states are one stack - when they share every frame below their tops, when their frames differ two levels down, when reduce chains of different lengths reach one goto, when the match sits past the head of its slot's chain, and when the slots grow between the two - while two stacks that share only their depth and top state stay two, so neither reading's continuation is lost.")]
+def test_lr1_stack_dedup(t : T?) {
+    // s ::= u 'y' ; u ::= a | b ; a ::= 'x' ; b ::= 'x'
+    t |> run("two reductions to one rule over a shared frame") @(t : T?) {
+        var gb : GrammarBuilder
+        let s = rule_id(gb, "s")
+        let u = rule_id(gb, "u")
+        let a = rule_id(gb, "a")
+        let b = rule_id(gb, "b")
+        add_production(gb, s, [sym_rule(u), sym_byte('y')])
+        add_production(gb, u, [sym_rule(a)])
+        add_production(gb, u, [sym_rule(b)])
+        add_production(gb, a, [sym_byte('x')])
+        add_production(gb, b, [sym_byte('x')])
+        let g <- build_grammar(gb, s)
+        t |> success(empty(g.err) && g.conflicts > 0, "it builds, with a reduce/reduce cell")
+        var st <- lr_start(g)
+        t |> success(lr_step_bytes(g, st, "xy"), "the readings fork on 'y' and rejoin at u")
+        t |> equal(length(st.stacks), 1, "... as one stack")
+        t |> success(lr_at_end(g, st), "... which completes the sentence")
+    }
+    // s ::= l n 'e' ; l ::= 'x' | 'x' 'x' ; n ::= 'x' | 'x' 'x'
+    t |> run("the same states over different frames") @(t : T?) {
+        var gb : GrammarBuilder
+        let s = rule_id(gb, "s")
+        let l = rule_id(gb, "l")
+        let n = rule_id(gb, "n")
+        add_production(gb, s, [sym_rule(l), sym_rule(n), sym_byte('e')])
+        add_production(gb, l, [sym_byte('x')])
+        add_production(gb, l, [sym_byte('x'), sym_byte('x')])
+        add_production(gb, n, [sym_byte('x')])
+        add_production(gb, n, [sym_byte('x'), sym_byte('x')])
+        let g <- build_grammar(gb, s)
+        t |> equal(g.err, "", "the grammar builds")
+        var st <- lr_start(g)
+        t |> success(lr_step_bytes(g, st, "xxx"), "'xxx' splits two ways: x|xx and xx|x")
+        t |> equal(length(st.stacks), 2, "... two stacks, l reduced a byte apart")
+        let tops := st.stacks
+        let nb = lr_next_bytes(g, st)
+        t |> success(nb['e'] && nb['x'] && !nb['y'], "the next bytes: the close, or one more x")
+        t |> equal(tops, st.stacks, "... read without moving the set")
+        t |> success(lr_step(g, st, uint8('e')), "'e' reduces both to l n, two frames apart")
+        t |> equal(length(st.stacks), 1, "... and the two are one stack")
+        t |> success(lr_at_end(g, st), "... which completes the sentence")
+    }
+    // s ::= a c 'e' | b c 'f' ; a ::= 'x' ; b ::= 'x' ; c ::= 'c'
+    t |> run("the same depth and top state, different frames below") @(t : T?) {
+        var gb : GrammarBuilder
+        let s = rule_id(gb, "s")
+        let a = rule_id(gb, "a")
+        let b = rule_id(gb, "b")
+        let c = rule_id(gb, "c")
+        add_production(gb, s, [sym_rule(a), sym_rule(c), sym_byte('e')])
+        add_production(gb, s, [sym_rule(b), sym_rule(c), sym_byte('f')])
+        add_production(gb, a, [sym_byte('x')])
+        add_production(gb, b, [sym_byte('x')])
+        add_production(gb, c, [sym_byte('c')])
+        let g <- build_grammar(gb, s)
+        t |> equal(g.err, "", "the grammar builds")
+        var st <- lr_start(g)
+        t |> success(lr_step_bytes(g, st, "xc"), "'c' shifts onto both readings of x")
+        t |> equal(length(st.stacks), 2, "... two stacks")
+        let s0 = st.stacks[0]
+        let s1 = st.stacks[1]
+        t |> success(s0.depth == s1.depth && s0.state == s1.state, "... alike at the top")
+        t |> success(lr_matches(g, "xce") && lr_matches(g, "xcf"), "neither merges into the other")
+        t |> success(!lr_matches(g, "xcg"), "... and nothing else does")
+    }
+    t |> run("reduce chains of different lengths to one goto") @(t : T?) {
+        check_chains_of_two_lengths(t)
+    }
+    t |> run("a slot chaining several stacks, the match not at its head") @(t : T?) {
+        check_chain_past_its_head(t)
+    }
+    t |> run("readings that meet after the slots grew within the step") @(t : T?) {
+        check_merge_after_slots_grow(t)
+    }
+}
+
+[test(description = "A byte refused at LR_MAX_STACKS leaves the very same tops in the set, and a sentence one byte short of the cap completes.")]
+def test_lr1_stack_cap_keeps_tops(t : T?) {
+    let g <- forking_grammar()
+    t |> equal(g.err, "")
+    var st <- lr_start(g)
+    let fed = feed_until_refused(g, st, uint8('x'), 64)
+    let tops := st.stacks
+    let n = length(tops)
+    t |> success(n > 1 && n <= LR_MAX_STACKS, "the set stopped inside the cap ({n})")
+    t |> success(!lr_step(g, st, uint8('x')), "the next x is refused")
+    t |> equal(tops, st.stacks, "... leaving the same tops")
+    t |> success(!lr_step(g, st, uint8('!')), "'!' is refused too: it forks the last x")
+    t |> equal(tops, st.stacks, "... leaving the same tops")
+    var short <- lr_start(g)
+    let sentence = "{repeat("x", fed - 1)}!"
+    t |> success(lr_step_bytes(g, short, sentence) && lr_at_end(g, short), "one x fewer completes")
 }
 
 [test(description = "Overlapping byte sets partition into three byte classes, and a set spanning two classes still matches through either of them.")]
